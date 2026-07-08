@@ -1,0 +1,60 @@
+
+=== 1. Targets exist & non-empty ===
+  PASS  present .env.example (      27 lines)
+  PASS  present package.json (      38 lines)
+  PASS  present src/app/api/settings/route.ts (     110 lines)
+  PASS  present src/app/settings/page.tsx (     299 lines)
+  PASS  present src/lib/chat/adapters/hermes.ts (      34 lines)
+  PASS  present src/lib/chat/adapters/mistral.ts (      32 lines)
+  PASS  present src/lib/probes/composite.ts (      79 lines)
+  PASS  present src/lib/types.ts (     131 lines)
+  PASS  present src/server/gateway.ts (     456 lines)
+
+=== 2. Open Notebook removed ===
+  PASS  docker.ts deleted
+  PASS  DockerProbe removed from types.ts
+  PASS  .env.example has no OPEN_NOTEBOOK
+  PASS  src/ has no open-notebook refs
+
+=== 3. Gateway-first chat adapters ===
+  PASS  Hermes has no NIM_* env references
+  PASS  Hermes calls streamViaGateway
+  PASS  Mistral has no MISTRAL_* env references
+  PASS  Mistral calls streamViaGateway
+
+=== 4. Dev gateway aliases for canonical ids ===
+  PASS  gateway aliases for hermes and mistral-vibe
+  PASS  ALIAS_BACKEND map declared
+
+=== 5. .env.example only carries gateway + DB ===
+  PASS  .env.example unset NIM_BASE_URL
+  PASS  .env.example unset NIM_API_KEY
+  PASS  .env.example unset MISTRAL_API_KEY
+  PASS  .env.example unset TELEGRAM_BOT_TOKEN
+  PASS  .env.example unset DISCORD_BOT_TOKEN
+  PASS  .env.example unset OPEN_NOTEBOOK_CONTAINER
+  PASS  .env.example unset OPEN_NOTEBOOK_PORT
+  PASS  .env.example unset HERMES_WEBUI_URL
+  PASS  .env.example unset OPEN_DESIGN_URL
+  PASS  env.example has MC_GATEWAY_URL slot
+  PASS  env.example has MC_GATEWAY_TOKEN slot
+
+=== 6. Settings page dead link fixed ===
+  PASS  no /dashboard link
+
+=== 7. Version bumped to 0.3.0 ===
+  PASS  version = 0.3.0
+
+=== 8. typecheck RUNNING ===
+  PASS  tsc --noEmit clean
+
+=== 9. DB state ===
+  PASS  DB present size=290816
+  PASS  DB backup: mission-control.db.bak.20260627-155057
+
+=== 10. Live boot skipped ===
+  NOTE  live dev and gateway boot would need explicit consent
+
+=== Summary ===
+  PASS=35 FAIL=0 NOTE=1
+AD-HOC VERIFICATION: green

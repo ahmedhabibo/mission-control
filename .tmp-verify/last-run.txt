@@ -1,0 +1,60 @@
+
+=== 1. Targets exist & are non-empty ===
+  PASS  present  .env.example (      27 lines)
+  PASS  present  package.json (      38 lines)
+  PASS  present  src/app/api/settings/route.ts (     110 lines)
+  PASS  present  src/app/settings/page.tsx (     299 lines)
+  PASS  present  src/lib/chat/adapters/hermes.ts (      34 lines)
+  PASS  present  src/lib/chat/adapters/mistral.ts (      32 lines)
+  PASS  present  src/lib/probes/composite.ts (      79 lines)
+  PASS  present  src/lib/types.ts (     131 lines)
+  PASS  present  src/server/gateway.ts (     456 lines)
+
+=== 2. Open Notebook removed ===
+  PASS  src/lib/probes/docker.ts deleted
+  PASS  DockerProbe removed from src/lib/types.ts
+  PASS  .env.example has no OPEN_NOTEBOOK_*
+  PASS  src/ has no 'open-notebook' references
+
+=== 3. Gateway-first chat adapters ===
+  PASS  Hermes adapter has no NIM_* env references
+  PASS  Hermes adapter calls streamViaGateway
+  PASS  Mistral adapter has no MISTRAL_* env references
+  PASS  Mistral adapter calls streamViaGateway
+
+=== 4. Dev gateway carries canonical-id aliases ===
+  PASS  src/server/gateway.ts has aliases for 'hermes' and 'mistral-vibe'
+  PASS  ALIAS_BACKEND map declared
+
+=== 5. .env.example only carries gateway + DB ===
+  PASS  .env.example unset  NIM_BASE_URL
+  PASS  .env.example unset  NIM_API_KEY
+  PASS  .env.example unset  MISTRAL_API_KEY
+  PASS  .env.example unset  TELEGRAM_BOT_TOKEN
+  PASS  .env.example unset  DISCORD_BOT_TOKEN
+  PASS  .env.example unset  OPEN_NOTEBOOK_CONTAINER
+  PASS  .env.example unset  OPEN_NOTEBOOK_PORT
+  PASS  .env.example unset  HERMES_WEBUI_URL
+  PASS  .env.example has MC_GATEWAY_URL slot
+  PASS  .env.example has MC_GATEWAY_TOKEN slot
+
+=== 6. Settings page dead link fixed (no /dashboard) ===
+  PASS  settings page has no link to /dashboard
+
+=== 7. Version bumped to 0.3.0 ===
+  PASS  package.json version is 0.3.0
+
+=== 8. typecheck (tsc --noEmit, no PII emitted) ===
+  PASS  tsc --noEmit: clean (0 errors, 0 output)
+
+=== 9. DB state ===
+  PASS  data/mission-control.db present (290816 bytes)
+  PASS  DB backup present: mission-control.db.bak.20260627-155057
+
+=== 10. (intentionally skipped) Live dev server + gateway smoke test ===
+  NOTE  would require binding two localhost ports (3007, 8787) and SSE handshake
+  NOTE  review-only scope per skill rule: do not boot long-running processes without consent
+
+=== Summary ===
+  PASS=34  FAIL=0  NOTE=2
+  AD-HOC VERIFICATION: green
