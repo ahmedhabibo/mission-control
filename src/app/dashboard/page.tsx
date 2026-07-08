@@ -19,6 +19,18 @@ import { Card } from "@/components/ui/card";
 import { Badge, StatusBadge } from "@/components/ui/badge";
 import { cn, formatLatency, timeAgo } from "@/lib/utils";
 import type { HealthStatus } from "@/lib/types";
+import {
+  UptimeTrendChart,
+  TokenBurnChart,
+  TaskThroughputChart,
+  AgentDistributionChart,
+} from "@/components/analytics";
+import {
+  transformUptimeData,
+  transformTokenUsageData,
+  transformTaskThroughputData,
+  transformAgentDistData,
+} from "@/lib/analytics/transforms";
 
 /**
  * Dashboard — analytics overview of the agent stack.
@@ -95,6 +107,12 @@ export default function DashboardPage() {
   const offlineTools = stats.offline ?? 0;
   const degradedTools = stats.degraded ?? 0;
   const avgUptime = average(data?.tools.map((t) => t.uptimePct) ?? []);
+
+  // Chart data transforms
+  const uptimeChartData = data ? transformUptimeData(data.tools) : [];
+  const tokenChartData = data ? transformTokenUsageData(data.tasks.byStatus) : [];
+  const throughputChartData = data ? transformTaskThroughputData(data.tasks.byStatus) : [];
+  const agentDistChartData = data ? transformAgentDistData(data.statusDistribution) : [];
 
   return (
     <div className="mx-auto max-w-7xl px-6 py-8">
@@ -184,6 +202,65 @@ export default function DashboardPage() {
           </div>
         </Card>
       ) : null}
+
+      {/* Analytics charts grid */}
+      <div className="mb-4 grid grid-cols-1 gap-4 lg:grid-cols-2">
+        <Card className="p-4">
+          <div className="mb-3 flex items-center justify-between">
+            <h2 className="text-sm font-semibold">Uptime trend</h2>
+            <span className="text-xs text-[var(--muted-foreground)]">
+              per tool · last sweep
+            </span>
+          </div>
+          {isLoading || !data ? (
+            <Skeleton rows={4} />
+          ) : (
+            <UptimeTrendChart data={uptimeChartData} />
+          )}
+        </Card>
+
+        <Card className="p-4">
+          <div className="mb-3 flex items-center justify-between">
+            <h2 className="text-sm font-semibold">Token burn</h2>
+            <span className="text-xs text-[var(--muted-foreground)]">
+              prompt vs completion
+            </span>
+          </div>
+          {isLoading || !data ? (
+            <Skeleton rows={4} />
+          ) : (
+            <TokenBurnChart data={tokenChartData} />
+          )}
+        </Card>
+
+        <Card className="p-4">
+          <div className="mb-3 flex items-center justify-between">
+            <h2 className="text-sm font-semibold">Task throughput</h2>
+            <span className="text-xs text-[var(--muted-foreground)]">
+              count by status
+            </span>
+          </div>
+          {isLoading || !data ? (
+            <Skeleton rows={4} />
+          ) : (
+            <TaskThroughputChart data={throughputChartData} />
+          )}
+        </Card>
+
+        <Card className="p-4">
+          <div className="mb-3 flex items-center justify-between">
+            <h2 className="text-sm font-semibold">Agent distribution</h2>
+            <span className="text-xs text-[var(--muted-foreground)]">
+              tools by health
+            </span>
+          </div>
+          {isLoading || !data ? (
+            <Skeleton rows={4} />
+          ) : (
+            <AgentDistributionChart data={agentDistChartData} />
+          )}
+        </Card>
+      </div>
 
       {/* Two columns: tool health table + task distribution */}
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
