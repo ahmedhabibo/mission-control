@@ -8,7 +8,7 @@ export const dynamic = "force-dynamic";
 /**
  * GET  /api/tasks          → list tasks (newest first)
  * POST /api/tasks          → create + enqueue a task
- *   body: { prompt, title?, intentHint?, priority? }
+ *   body: { prompt, title?, intentHint?, priority?, chainId?, parentIds? }
  */
 export async function GET() {
   ensureSchema();
@@ -22,6 +22,8 @@ export async function POST(request: Request) {
     title?: string;
     intentHint?: Intent | "auto";
     priority?: number;
+    chainId?: string;
+    parentIds?: string[];
   };
 
   if (!body.prompt?.trim()) {
@@ -33,6 +35,8 @@ export async function POST(request: Request) {
     title: body.title,
     intentHint: body.intentHint ?? "auto",
     priority: body.priority,
+    chainId: body.chainId,
+    parentIds: body.parentIds,
   });
   return NextResponse.json({ task });
 }

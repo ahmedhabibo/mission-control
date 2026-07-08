@@ -75,6 +75,13 @@ export default function RootLayout({
                   Tasks
                 </Link>
                 <Link
+                  href="/orchestration"
+                  className="flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm text-[var(--muted-foreground)] transition-colors hover:bg-[var(--muted)] hover:text-[var(--foreground)]"
+                >
+                  <Activity className="h-3.5 w-3.5" />
+                  Orchestration
+                </Link>
+                <Link
                   href="/settings"
                   className="flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm text-[var(--muted-foreground)] transition-colors hover:bg-[var(--muted)] hover:text-[var(--foreground)]"
                 >

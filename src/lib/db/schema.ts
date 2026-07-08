@@ -102,6 +102,11 @@ export const tasks = sqliteTable("tasks", {
   completionTokens: integer("completion_tokens"),
   // Free-text error message on failure.
   error: text("error"),
+  // Chain relationships (v0.3 orchestration): every task belongs to at most
+  // one chain (groups visually); a task can depend on multiple parents
+  // (must wait for all parents to be `done` before running).
+  chainId: text("chain_id"),
+  parentIds: text("parent_ids"), // JSON array of task ids
   createdAt: text("created_at").notNull().default(sql`(CURRENT_TIMESTAMP)`),
   startedAt: text("started_at"),
   completedAt: text("completed_at"),

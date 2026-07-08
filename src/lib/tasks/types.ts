@@ -11,6 +11,12 @@ export interface CreateTaskInput {
   /** "auto" to classify, or a fixed Intent to skip classification. */
   intentHint?: Intent | "auto";
   priority?: number;
+  /** Chain membership — all tasks in a chain share the same chainId and
+   *  are rendered together in the orchestration view. */
+  chainId?: string;
+  /** Task ids this task is blocked on. Worker skips the task until all
+   *  parents are `done`. */
+  parentIds?: string[];
 }
 
 /** What the routing engine decides before execution. */
@@ -38,6 +44,10 @@ export interface TaskDTO {
   promptTokens: number | null;
   completionTokens: number | null;
   error: string | null;
+  /** Same chainId across dependent tasks — identifies a drag-and-drop chain. */
+  chainId: string | null;
+  /** Dependency ids: this task waits for all listed parents to be `done`. */
+  parentIds: string[];
   createdAt: string;
   startedAt: string | null;
   completedAt: string | null;
@@ -49,3 +59,20 @@ export type TaskEvent =
   | { type: "delta"; taskId: string; content: string }
   | { type: "done"; taskId: string; result: string }
   | { type: "error"; taskId: string; message: string };
+
+/** One node in the dependency graph (used by the orchestration view). */
+export interface GraphNode {
+  id: string;
+  task: TaskDTO;
+  /** Absolute pixel position in the SVG canvas; assigned client-side. */
+  x: number;
+  y: number;
+  /** Column index for cascading layout (left-of = earlier in chain). */
+  col: number;
+}
+
+/** Directed edge in the dependency graph. */
+export interface GraphEdge {
+  from: string; // parent id
+  to: string;   // child id
+}

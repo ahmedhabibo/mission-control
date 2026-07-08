@@ -93,6 +93,8 @@ export function ensureSchema() {
       prompt_tokens INTEGER,
       completion_tokens INTEGER,
       error TEXT,
+      chain_id TEXT,
+      parent_ids TEXT,
       created_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),
       started_at TEXT,
       completed_at TEXT
@@ -102,4 +104,13 @@ export function ensureSchema() {
     CREATE INDEX IF NOT EXISTS idx_tasks_created
       ON tasks (created_at DESC);
   `);
+
+  // Idempotent ALTERs — only adds columns if missing. Safe to call repeatedly.
+  // SQLite supports at most one ALTER TABLE per statement; each error is
+  // suppressed because "duplicate column name" is an expected first-run skip.
+  try { raw.exec(`ALTER TABLE tasks ADD COLUMN chain_id TEXT`); } catch { /* already exists */ }
+  try { raw.exec(`ALTER TABLE tasks ADD COLUMN parent_ids TEXT`); } catch { /* already exists */ }
+
+  // Index on chain_id must be created AFTER the column exists.
+  try { raw.exec(`CREATE INDEX IF NOT EXISTS idx_tasks_chain ON tasks (chain_id)`); } catch { /* already exists */ }
 }

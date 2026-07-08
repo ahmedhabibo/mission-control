@@ -83,8 +83,10 @@ export async function createTask(input: CreateTaskInput): Promise<TaskDTO> {
   const decision: RoutingDecision = route(intent);
   const assignedAgent = pickAgent(decision);
 
-  // If no agent is available, we still store the task as "queued" with a note;
-  // it'll flip to failed when the worker attempts it.
+  // Initial status: `queued` if no parents, otherwise `waiting` would be
+  // nicer but we keep the 5-state enum intact. Parents gate the worker; the
+  // status stays `queued` and the worker treats it as not-ready until the
+  // gate flips.
   db.insert(tasks)
     .values({
       id,
@@ -96,6 +98,10 @@ export async function createTask(input: CreateTaskInput): Promise<TaskDTO> {
       assignedAgent,
       status: assignedAgent ? "queued" : "queued",
       priority: input.priority ?? 0,
+      chainId: input.chainId ?? null,
+      parentIds: input.parentIds && input.parentIds.length > 0
+        ? JSON.stringify(input.parentIds)
+        : null,
       createdAt: now,
     })
     .run();
@@ -146,23 +152,51 @@ const cancelledIds = new Set<string>();
 
 async function runWorkerLoop() {
   while (true) {
-    // Pick the highest-priority queued task, oldest first on ties.
-    const next = db
+    // Pick the highest-priority queued task whose parents are all `done`.
+    const queued = db
       .select()
       .from(tasks)
       .where(eq(tasks.status, "queued"))
-      .all()
-      .sort((a, b) => b.priority - a.priority || a.createdAt.localeCompare(b.createdAt))[0];
+      .all();
 
-    if (!next) {
-      // Nothing to do; back off briefly and re-check.
+    const ready = queued.filter((t) => parentsSatisfied(t));
+    ready.sort(
+      (a, b) =>
+        b.priority - a.priority || a.createdAt.localeCompare(b.createdAt),
+    );
+
+    if (ready.length === 0) {
       await sleep(1000);
       continue;
     }
-    await executeTask(toDTO(next)).catch((err) =>
+    await executeTask(toDTO(ready[0])).catch((err) =>
       console.error("[tasks] executeTask crashed:", err),
     );
   }
+}
+
+/** Check that every parent of `t` is `done`, or that the parent no longer
+ *  exists (treat missing parents as satisfied — old chains referencing a
+ *  deleted task shouldn't deadlock new ones). */
+function parentsSatisfied(t: typeof tasks.$inferSelect): boolean {
+  if (!t.parentIds) return true;
+  let ids: string[];
+  try {
+    ids = JSON.parse(t.parentIds) as string[];
+  } catch {
+    return true;
+  }
+  if (!Array.isArray(ids) || ids.length === 0) return true;
+  for (const parentId of ids) {
+    const row = db
+      .select()
+      .from(tasks)
+      .where(eq(tasks.id, parentId))
+      .all()[0];
+    if (!row) continue; // missing parent → not blocking
+    if (row.status !== "done") return false;
+  }
+  return true;
 }
 
 /** Execute a single task end-to-end. */
@@ -277,6 +311,15 @@ function intentSystemPrompt(intent: Intent | null): string {
 }
 
 function toDTO(row: typeof tasks.$inferSelect): TaskDTO {
+  let parents: string[] = [];
+  if (row.parentIds) {
+    try {
+      const parsed = JSON.parse(row.parentIds);
+      if (Array.isArray(parsed)) parents = parsed.filter((s): s is string => typeof s === "string");
+    } catch {
+      /* corrupt JSON — treat as no parents */
+    }
+  }
   return {
     id: row.id,
     title: row.title,
@@ -292,6 +335,8 @@ function toDTO(row: typeof tasks.$inferSelect): TaskDTO {
     promptTokens: row.promptTokens,
     completionTokens: row.completionTokens,
     error: row.error,
+    chainId: row.chainId ?? null,
+    parentIds: parents,
     createdAt: row.createdAt,
     startedAt: row.startedAt,
     completedAt: row.completedAt,

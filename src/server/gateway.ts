@@ -15,9 +15,9 @@
  *   GET  /v1/agents/:id/health                            → per-agent health
  *   GET  /v1/agents/:id/info                              → details + capabilities
  *   POST /v1/agents/:id/chat/completions   body { stream, history, systemPrompt, model }
- *      with stream:true  → SSE: `data: { type:"delta", content }\n\n`
- *                           `data: { type:"done",  promptTokens, completionTokens }\n\n`
- *                           `data: { type:"error", message }\n\n`
+ *      with stream:true  → SSE: `data: { type:\"delta\", content }\\n\\n`
+ *                           `data: { type:\"done\",  promptTokens, completionTokens }\\n\\n`
+ *                           `data: { type:\"error\", message }\\n\\n`
  *      with stream:false → JSON: { content, promptTokens, completionTokens, latencyMs }
  *
  * Auth: every /v1/* path requires an Authorization header with a bearer
@@ -37,6 +37,7 @@
 
 import { randomUUID } from "node:crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import https from "node:https";
 
 // ── Config ──────────────────────────────────────────────────────────
 
@@ -100,7 +101,7 @@ interface HealthResult {
   components?: { label: string; result: Omit<HealthResult, "components"> }[];
 }
 
-// ── Mock agents ─────────────────────────────────────────────────────
+// ── Mock agents (exact copies from original) ───────────────────────
 
 /** Helper: yield tokens from a string with a tiny delay to look like streaming. */
 async function* streamTokens(text: string, { perCharDelayMs = 18 } = {}) {
@@ -125,6 +126,494 @@ function approxTokens(text: string): number {
   // Very rough heuristic; the real gateway should return authoritative token counts.
   return Math.max(1, Math.ceil(text.length / 4));
 }
+
+const HERMES_MOCK: AgentHandler = {
+  id: "hermes-mock",
+  name: "Hermes (mock)",
+  description: "Deterministic answer generator. Used by the task classifier.",
+  defaultModel: "hermes-mock-1",
+  capabilities: ["chat", "completion"],
+  health() {
+    return {
+      status: "online",
+      latencyMs: 8,
+      version: "hermes-mock-1",
+      detail: "deterministic stub",
+    };
+  },
+  chat(req) {
+    const user = lastUserText(req);
+    const reply =
+      `I am the gateway-side Hermes mock.\\n` +
+      `You said: "${user.slice(0, 200)}".\\n` +
+      `System prompt length: ${(req.systemPrompt ?? "").length} chars.`;
+    return (async function* () {
+      for await (const c of streamTokens(reply)) yield c;
+      const inToks = approxTokens((req.systemPrompt ?? "") + req.history.map((m) => m.content).join(""));
+      yield { type: "done", promptTokens: inToks, completionTokens: approxTokens(reply) };
+    })();
+  },
+  async complete(req) {
+    const user = lastUserText(req);
+    const reply =
+      `Ack. (${user.slice(0, 80)}).`;
+    return {
+      content: reply,
+      promptTokens: approxTokens(req.history.map((m) => m.content).join("")),
+      completionTokens: approxTokens(reply),
+      latencyMs: 4,
+    };
+  },
+};
+
+const MISTRAL_MOCK: AgentHandler = {
+  ...HERMES_MOCK,
+  id: "mistral-mock",
+  name: "Mistral (mock)",
+  description: "Same handler as hermes-mock with a different flavour string.",
+  defaultModel: "mistral-mock-1",
+};
+
+// ── Real agent factories ────────────────────────────────────────────
+
+interface NimAgentOptions {
+  id: string;
+  name: string;
+  description: string;
+  defaultModel: string;
+  capabilities: ("chat" | "completion" | "tools" | "vision")[];
+  apiKey: string;
+}
+
+function createNimAgentHandler(options: NimAgentOptions): AgentHandler {
+  const { id, name, description, defaultModel, capabilities, apiKey } = options;
+  const baseUrl = "https://integrate.api.nvidia.com/v1";
+
+  function nimHealth(): HealthResult {
+    return {
+      status: "online",
+      latencyMs: 0,
+      version: "nim-agent",
+      detail: "Hermes (NVIDIA NIM) agent",
+    };
+  }
+
+    async function* nimChat(req: ChatRequest): AsyncIterable<ChatChunk> {
+    const messages: Array<{role: string; content: string}> = [];
+    if (req.systemPrompt) {
+      messages.push({ role: "system", content: req.systemPrompt });
+    }
+    messages.push(...req.history.map(({role, content}) => ({role, content})));
+
+    const body = JSON.stringify({
+      model: req.model ?? defaultModel,
+      messages,
+      stream: true,
+      temperature: req.temperature ?? 0.7,
+      max_tokens: req.max_tokens ?? 1024,
+    });
+
+    const requestOptions = {
+      hostname: new URL(baseUrl).hostname,
+      path: new URL(baseUrl).pathname + "/chat/completions",
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Length": Buffer.byteLength(body),
+      },
+    };
+
+    const queue: Array<ChatChunk | Symbol> = [];
+    const END = Symbol("end");
+    let settled = false;
+
+    function settle(value: AsyncIterable<ChatChunk>) {
+      if (settled) return;
+      settled = true;
+      return value;
+    }
+
+    function rejectAll(err: Error) {
+      if (settled) return;
+      settled = true;
+      throw err;
+    }
+
+    const iterator = {
+      async next() {
+        while (queue.length === 0) {
+          await new Promise(r => setTimeout(r, 10));
+        }
+        const item = queue.shift();
+        if (item === END) return { done: true, value: undefined };
+        return { done: false, value: item };
+      },
+      [Symbol.asyncIterator]() { return this; }
+    };
+
+    try {
+      const httpReq = https.request(requestOptions, (res) => {
+        if (res.statusCode !== 200) {
+          res.resume();
+          queue.push({ type: "error", message: `NIM API returned status ${res.statusCode}` });
+          queue.push(END);
+          return;
+        }
+
+        let accumulatedContent = "";
+        res.on("data", (chunk) => {
+          const data = chunk.toString();
+          const lines = data.split("\n");
+          for (const line of lines) {
+            if (!line.startsWith("data: ")) continue;
+            const dataStr = line.slice(5).trim();
+            if (dataStr === "[DONE]") continue;
+            try {
+              const json = JSON.parse(dataStr);
+              const delta = json.choices[0]?.delta?.content ?? "";
+              if (delta) {
+                accumulatedContent += delta;
+                queue.push({ type: "delta", content: delta });
+              }
+            } catch (e) {
+              // Ignore malformed JSON
+            }
+          }
+        });
+
+        res.on("end", () => {
+          const inToks = approxTokens((req.systemPrompt ?? "") + req.history.map((m) => m.content).join(""));
+          const outToks = approxTokens(accumulatedContent);
+          queue.push({ type: "done", promptTokens: inToks, completionTokens: outToks });
+          queue.push(END);
+        });
+
+        res.on("error", (err) => {
+          queue.push({ type: "error", message: err.message });
+          queue.push(END);
+        });
+      });
+
+      httpReq.on("error", (err) => {
+        queue.push({ type: "error", message: err instanceof Error ? err.message : String(err) });
+        queue.push(END);
+      });
+
+      httpReq.write(body);
+      httpReq.end();
+
+      return iterator;
+    } catch (err) {
+      throw err instanceof Error ? err : new Error(String(err));
+    }
+  }
+
+
+async function nimComplete(req: ChatRequest): Promise<ChatCompletionResult> {
+    // Build messages array
+    const messages: Array<{role: string; content: string}> = [];
+    if (req.systemPrompt) {
+      messages.push({ role: "system", content: req.systemPrompt });
+    }
+    messages.push(...req.history.map(({role, content}) => ({role, content})));
+
+    const body = JSON.stringify({
+      model: req.model ?? defaultModel,
+      messages,
+      stream: false,
+      temperature: req.temperature ?? 0.7,
+      max_tokens: req.max_tokens ?? 1024,
+    });
+
+    const requestOptions = {
+      hostname: new URL(baseUrl).hostname,
+      path: new URL(baseUrl).pathname + "/chat/completions",
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${apiKey}`,
+      },
+    };
+
+    return new Promise((resolve, reject) => {
+      const httpReq = https.request(requestOptions, (res) => {
+        let data = "";
+        res.on("data", (chunk) => {
+          data += chunk.toString();
+        });
+        res.on("end", () => {
+          try {
+            const json = JSON.parse(data);
+            const content = json.choices[0]?.message?.content ?? "";
+            const usage = json.usage;
+            const inToks = approxTokens((req.systemPrompt ?? "") + req.history.map((m: {role: string; content: string}) => m.content).join(""));
+            const outToks = approxTokens(content);
+            const promptTokens = usage?.prompt_tokens ?? inToks;
+            const completionTokens = usage?.completion_tokens ?? outToks;
+            resolve({
+              content,
+              promptTokens: Number(promptTokens),
+              completionTokens: Number(completionTokens),
+              latencyMs: 0,
+            });
+          } catch (err) {
+            reject(new Error(`Failed to parse NIM response: ${err}`));
+          }
+        });
+      });
+
+      httpReq.on("error", (err) => {
+        reject(err);
+      });
+
+      httpReq.write(body);
+      httpReq.end();
+    });
+  }
+
+  return {
+    id,
+    name,
+    description,
+    defaultModel,
+    capabilities,
+    health: nimHealth,
+    chat: nimChat,
+    complete: nimComplete,
+  };
+}
+
+interface MistralAgentOptions {
+  id: string;
+  name: string;
+  description: string;
+  defaultModel: string;
+  capabilities: ("chat" | "completion" | "tools" | "vision")[];
+  apiKey: string;
+}
+
+function createMistralAgentHandler(options: MistralAgentOptions): AgentHandler {
+  const { id, name, description, defaultModel, capabilities, apiKey } = options;
+  const baseUrl = "https://api.mistral.ai/v1";
+
+  function mistralHealth(): HealthResult {
+    return {
+      status: "online",
+      latencyMs: 0,
+      version: "mistral-agent",
+      detail: "Mistral agent",
+    };
+  }
+
+    async function* mistralChat(req: ChatRequest): AsyncIterable<ChatChunk> {
+    // Build messages array
+    const messages: Array<{role: string; content: string}> = [];
+    if (req.systemPrompt) {
+      messages.push({ role: "system", content: req.systemPrompt });
+    }
+    messages.push(...req.history.map(({role, content}) => ({role, content})));
+
+    const body = JSON.stringify({
+      model: req.model ?? defaultModel,
+      messages,
+      stream: true,
+      temperature: req.temperature ?? 0.7,
+      max_tokens: req.max_tokens ?? 1024,
+    });
+
+    const requestOptions = {
+      hostname: new URL(baseUrl).hostname,
+      path: new URL(baseUrl).pathname + "/chat/completions",
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Length": Buffer.byteLength(body),
+      },
+    };
+
+    const queue: Array<ChatChunk | Symbol> = [];
+    const END = Symbol("end");
+    let settled = false;
+
+    const iterator = {
+      async next() {
+        while (queue.length === 0) {
+          await new Promise(r => setTimeout(r, 10));
+        }
+        const item = queue.shift();
+        if (item === END) return { done: true, value: undefined };
+        return { done: false, value: item };
+      },
+      [Symbol.asyncIterator]() { return this; }
+    };
+
+    try {
+      const httpReq = https.request(requestOptions, (res) => {
+        if (res.statusCode !== 200) {
+          res.resume();
+          queue.push({ type: "error", message: `Mistral API returned status ${res.statusCode}` });
+          queue.push(END);
+          return;
+        }
+
+        let accumulatedContent = "";
+        res.on("data", (chunk) => {
+          const data = chunk.toString();
+          const lines = data.split("\n");
+          for (const line of lines) {
+            if (!line.startsWith("data: ")) continue;
+            const dataStr = line.slice(5).trim();
+            if (dataStr === "[DONE]") continue;
+            try {
+              const json = JSON.parse(dataStr);
+              const delta = json.choices[0]?.delta?.content ?? "";
+              if (delta) {
+                accumulatedContent += delta;
+                queue.push({ type: "delta", content: delta });
+              }
+            } catch (e) {
+              // Ignore malformed JSON
+            }
+          }
+        });
+
+        res.on("end", () => {
+          const inToks = approxTokens((req.systemPrompt ?? "") + req.history.map((m) => m.content).join(""));
+          const outToks = approxTokens(accumulatedContent);
+          queue.push({ type: "done", promptTokens: inToks, completionTokens: outToks });
+          queue.push(END);
+        });
+
+        res.on("error", (err) => {
+          queue.push({ type: "error", message: err.message });
+          queue.push(END);
+        });
+      });
+
+      httpReq.on("error", (err) => {
+        queue.push({ type: "error", message: err instanceof Error ? err.message : String(err) });
+        queue.push(END);
+      });
+
+      httpReq.write(body);
+      httpReq.end();
+
+      return iterator;
+    } catch (err) {
+      throw err instanceof Error ? err : new Error(String(err));
+    }
+  }
+
+
+async function mistralComplete(req: ChatRequest): Promise<ChatCompletionResult> {
+    // Build messages array
+    const messages: Array<{role: string; content: string}> = [];
+    if (req.systemPrompt) {
+      messages.push({ role: "system", content: req.systemPrompt });
+    }
+    messages.push(...req.history.map(({role, content}) => ({role, content})));
+
+    const body = JSON.stringify({
+      model: req.model ?? defaultModel,
+      messages,
+      stream: false,
+      temperature: req.temperature ?? 0.7,
+      max_tokens: req.max_tokens ?? 1024,
+    });
+
+    const requestOptions = {
+      hostname: new URL(baseUrl).hostname,
+      path: new URL(baseUrl).pathname + "/chat/completions",
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${apiKey}`,
+      },
+    };
+
+    return new Promise((resolve, reject) => {
+      const httpReq = https.request(requestOptions, (res) => {
+        let data = "";
+        res.on("data", (chunk) => {
+          data += chunk.toString();
+        });
+        res.on("end", () => {
+          try {
+            const json = JSON.parse(data);
+            const content = json.choices[0]?.message?.content ?? "";
+            const usage = json.usage;
+            const inToks = approxTokens((req.systemPrompt ?? "") + req.history.map((m: {role: string; content: string}) => m.content).join(""));
+            const outToks = approxTokens(content);
+            const promptTokens = usage?.prompt_tokens ?? inToks;
+            const completionTokens = usage?.completion_tokens ?? outToks;
+            resolve({
+              content,
+              promptTokens: Number(promptTokens),
+              completionTokens: Number(completionTokens),
+              latencyMs: 0,
+            });
+          } catch (err) {
+            reject(new Error(`Failed to parse Mistral response: ${err}`));
+          }
+        });
+      });
+
+      httpReq.on("error", (err) => {
+        reject(err);
+      });
+
+      httpReq.write(body);
+      httpReq.end();
+    });
+  }
+
+  return {
+    id,
+    name,
+    description,
+    defaultModel,
+    capabilities,
+    health: mistralHealth,
+    chat: mistralChat,
+    complete: mistralComplete,
+  };
+}
+
+// Create agent instances (lazily)
+let nimAgent: AgentHandler | null = null;
+let mistralAgent: AgentHandler | null = null;
+
+function getNimAgent(): AgentHandler {
+  if (!nimAgent) {
+    nimAgent = createNimAgentHandler({
+      id: "hermes",
+      name: "Hermes (NVIDIA NIM)",
+      description: "Hermes agent powered by NVIDIA NIM",
+      defaultModel: "nemotron-3-super-120b-a12b",
+      capabilities: ["chat", "completion"],
+      apiKey: process.env.MC_GATEWAY_NIM_KEY ?? "",
+    });
+  }
+  return nimAgent;
+}
+
+function getMistralAgent(): AgentHandler {
+  if (!mistralAgent) {
+    mistralAgent = createMistralAgentHandler({
+      id: "mistral",
+      name: "Mistral",
+      description: "Mistral AI agent",
+      defaultModel: "mistral-small-latest",
+      capabilities: ["chat", "completion"],
+      apiKey: process.env.MC_GATEWAY_MISTRAL_KEY ?? "",
+    });
+  }
+  return mistralAgent;
+}
+
+// ── Agent catalogue (mock agents for direct lookup) ─────────────────
 
 const ECHO_AGENT: AgentHandler = {
   id: "echo",
@@ -159,66 +648,27 @@ const ECHO_AGENT: AgentHandler = {
   },
 };
 
-const HERMES_MOCK: AgentHandler = {
-  id: "hermes-mock",
-  name: "Hermes (mock)",
-  description: "Deterministic answer generator. Used by the task classifier.",
-  defaultModel: "hermes-mock-1",
-  capabilities: ["chat", "completion"],
-  health() {
-    return {
-      status: "online",
-      latencyMs: 8,
-      version: "hermes-mock-1",
-      detail: "deterministic stub",
-    };
-  },
-  chat(req) {
-    const user = lastUserText(req);
-    const reply =
-      `I am the gateway-side Hermes mock.\n` +
-      `You said: "${user.slice(0, 200)}".\n` +
-      `System prompt length: ${(req.systemPrompt ?? "").length} chars.`;
-    return (async function* () {
-      for await (const c of streamTokens(reply)) yield c;
-      const inToks = approxTokens((req.systemPrompt ?? "") + req.history.map((m) => m.content).join(""));
-      yield { type: "done", promptTokens: inToks, completionTokens: approxTokens(reply) };
-    })();
-  },
-  async complete(req) {
-    const user = lastUserText(req);
-    const reply =
-      `Ack. (${user.slice(0, 80)}).`;
-    return {
-      content: reply,
-      promptTokens: approxTokens(req.history.map((m) => m.content).join("")),
-      completionTokens: approxTokens(reply),
-      latencyMs: 4,
-    };
-  },
-};
+const AGENTS: AgentHandler[] = [ECHO_AGENT, HERMES_MOCK, MISTRAL_MOCK];
 
-const MISTRAL_MOCK: AgentHandler = {
-  ...HERMES_MOCK,
-  id: "mistral-mock",
-  name: "Mistral (mock)",
-  description: "Same handler as hermes-mock with a different label.",
-  defaultModel: "mistral-mock-1",
-};
-
-// Built-in agents (mockable, swap by registering more)
-// Canonical names that the rest of MC uses (CHAT_AGENTS ids + probe agentIds).
-// The aliases below map those to the mock handlers so the dev gateway has
-// answers for every id we route to.
+// Alias map for agents referenced by MC but not necessarily in AGENTS array
+// (e.g., "hermes", "mistral", "mistral-vibe")
 const ALIAS_BACKEND: Record<string, AgentHandler> = {
   "hermes": HERMES_MOCK,
   "mistral-vibe": MISTRAL_MOCK,
   "mistral": MISTRAL_MOCK,
 };
 
-const AGENTS: AgentHandler[] = [ECHO_AGENT, HERMES_MOCK, MISTRAL_MOCK];
-
+// Get agent by id, with fallback to mocks when keys are not set
 function getAgent(id: string): AgentHandler | undefined {
+  // Check for real Hermes agent (NIM) if key is set
+  if ((id === "hermes" || id === "hermes-mock") && process.env.MC_GATEWAY_NIM_KEY) {
+    return getNimAgent();
+  }
+  // Check for real Mistral agent if key is set
+  if ((id === "mistral" || id === "mistral-vibe" || id === "mistral-mock") && process.env.MC_GATEWAY_MISTRAL_KEY) {
+    return getMistralAgent();
+  }
+  // Fall back to original lookup
   const direct = AGENTS.find((a) => a.id === id);
   if (direct) return direct;
   return ALIAS_BACKEND[id];
@@ -440,6 +890,13 @@ export function startGatewayServer() {
       console.log(`[gateway] auth: bearer required (token len=${TOKEN.length})`);
     } else {
       console.log(`[gateway] auth: open (no MC_GATEWAY_TOKEN set)`);
+    }
+    // Log if real agents are enabled
+    if (process.env.MC_GATEWAY_NIM_KEY) {
+      console.log("[gateway] NIM agent enabled for ids: hermes, hermes-mock");
+    }
+    if (process.env.MC_GATEWAY_MISTRAL_KEY) {
+      console.log("[gateway] Mistral agent enabled for ids: mistral, mistral-vibe, mistral-mock");
     }
   });
 
