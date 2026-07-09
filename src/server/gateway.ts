@@ -810,6 +810,76 @@ function unauthorized(res: ServerResponse) {
   sendJSON(res, 401, { error: "missing or invalid bearer token" });
 }
 
+/**
+ * Fetch live model lists from all configured providers concurrently.
+ * Returns a merged array of { id, provider, owned_by }.
+ * Failed providers contribute zero models (silent fallback).
+ */
+async function fetchLiveModels(): Promise<
+  Array<{ id: string; provider: string; owned_by?: string }>
+> {
+  const tasks: Promise<Array<{ id: string; provider: string; owned_by?: string }>>[] = [];
+
+  // NVIDIA NIM
+  if (process.env.NIM_API_KEY) {
+    tasks.push(
+      fetch("https://integrate.api.nvidia.com/v1/models", {
+        headers: { Authorization: "Bearer " + process.env.NIM_API_KEY },
+      })
+        .then((r) => r.json())
+        .then((d: any) =>
+          (d?.data ?? []).map((m: any) => ({
+            id: m.id as string,
+            provider: "nvidia",
+            owned_by: m.owned_by,
+          })),
+        )
+        .catch(() => [] as any),
+    );
+  }
+
+  // Mistral
+  if (process.env.MISTRAL_API_KEY) {
+    tasks.push(
+      fetch("https://api.mistral.ai/v1/models", {
+        headers: { Authorization: "Bearer " + process.env.MISTRAL_API_KEY },
+      })
+        .then((r) => r.json())
+        .then((d: any) =>
+          (d?.data ?? []).map((m: any) => ({
+            id: m.id as string,
+            provider: "mistral",
+            owned_by: m.owned_by,
+          })),
+        )
+        .catch(() => [] as any),
+    );
+  }
+
+  // OpenRouter
+  if (process.env.OPENROUTER_API_KEY) {
+    tasks.push(
+      fetch("https://openrouter.ai/api/v1/models", {
+        headers: {
+          Authorization: "Bearer " + process.env.OPENROUTER_API_KEY,
+        },
+      })
+        .then((r) => r.json())
+        .then((d: any) =>
+          (d?.data ?? []).map((m: any) => ({
+            id: m.id as string,
+            provider: "openrouter",
+            owned_by: m.id?.split("/")[0],
+          })),
+        )
+        .catch(() => [] as any),
+    );
+  }
+
+  const results = await Promise.all(tasks);
+  return results.flat();
+}
+
 async function route(req: IncomingMessage, res: ServerResponse) {
   const url = new URL(req.url ?? "/", `http://${req.headers.host}`);
   const segments = url.pathname.split("/").filter(Boolean);
@@ -822,6 +892,18 @@ async function route(req: IncomingMessage, res: ServerResponse) {
       uptime: process.uptime(),
       agents: AGENTS.length,
     });
+  }
+
+  // GET /v1/models — live model catalogue pulled from each provider.
+  // Returns { models: [{ id, provider, owned_by, created }] }
+  if (req.method === "GET" && segments[0] === "v1" && segments[1] === "models") {
+    if (!authOK(req)) return unauthorized(res);
+    try {
+      const models = await fetchLiveModels();
+      return sendJSON(res, 200, { models });
+    } catch (err) {
+      return sendJSON(res, 500, { error: "Failed to fetch models: " + (err instanceof Error ? err.message : String(err)) });
+    }
   }
 
   // Everything below requires auth.

@@ -256,16 +256,48 @@ export interface PickerGroup {
   options: ReturnType<typeof pickerOptionsFor>;
 }
 
-/** Group all catalogue models by provider for the full picker view. */
-export function groupedPickerOptions(): PickerGroup[] {
+/**
+ * Group all catalogue models by provider for the full picker view.
+ * If `liveModels` is provided (from /api/chat/models), the live list
+ * is merged: models that exist in both get `live: true`, models only
+ * in the live list get added with `live: false`, and the static
+ * catalogue's metadata (description, latency, price) is preserved
+ * as the source of truth for known models.
+ */
+export function groupedPickerOptions(liveModels?: Array<{ id: string; provider: string; friendlyName?: string }>): PickerGroup[] {
   const providers: ModelEntry["provider"][] = ["nvidia", "mistral", "openrouter"];
+
+  // Build a set of live model IDs per provider for quick lookup.
+  const liveSet = new Map<string, boolean>();
+  if (liveModels) {
+    for (const m of liveModels) liveSet.set(`${m.provider}:${m.id}`, true);
+  }
+
   return providers
     .map((provider) => {
-      const models = modelsForProvider(provider);
+      // Start with static catalogue entries.
+      const staticModels = modelsForProvider(provider);
+      const staticIds = new Set(staticModels.map((m) => m.id));
+
+      // Add live models not in the static catalogue.
+      const liveOnly = (liveModels ?? [])
+        .filter((m) => m.provider === provider && !staticIds.has(m.id))
+        .map((m) => ({
+          id: m.id,
+          provider,
+          friendlyName: m.friendlyName ?? m.id.split("/").pop() ?? m.id,
+          description: "Available from provider.",
+          categories: ["chat"],
+          live: false,
+        } as ModelEntry));
+
+      // Merge: static first (they have metadata), then live-only.
+      const merged = [...staticModels, ...liveOnly];
+
       return {
         provider,
         label: PROVIDER_LABELS[provider]?.label ?? provider,
-        options: pickerOptionsFor(models),
+        options: pickerOptionsFor(merged),
       };
     })
     .filter((g) => g.options.length > 0);

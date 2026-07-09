@@ -82,12 +82,15 @@ export default function ChatPage() {
   const [selectedAgent, setSelectedAgent] = useState<string>("hermes");
   const [submittingTask, setSubmittingTask] = useState(false);
   const [taskToast, setTaskToast] = useState(false);
-  // Show the model's reasoning block ("...</think>") separately, like the Hermes WebUI.
+  // Show the model's reasoning block separately, like the Hermes WebUI.
   // Persisted in localStorage so the user's preference survives reloads.
   const [showThinking, setShowThinking] = useState(true);
   // Tracks the in-flight retry per message id (so multiple messages can retry
   // concurrently and we can show a spinner on just the right one).
   const [retryingId, setRetryingId] = useState<number | null>(null);
+  // Live model list from /api/chat/models (fetched once on mount, refreshed
+  // every 5 min by the API route cache). Merged into groupedPickerOptions.
+  const [liveModels, setLiveModels] = useState<Array<{ id: string; provider: string; friendlyName?: string }>>([]);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -120,6 +123,23 @@ export default function ChatPage() {
         const first = d.agents.find((a: ChatAgent) => a.available);
         if (first) setSelectedAgent(first.id);
       });
+    // Fetch live model catalogue from the gateway. The API route
+    // caches for 5 min, so this is cheap on repeated calls.
+    fetch("/api/chat/models")
+      .then((r) => r.json())
+      .then((d) => {
+        if (d.models?.groups) {
+          // Flatten the grouped response into a single array.
+          const flat: Array<{ id: string; provider: string; friendlyName?: string }> = [];
+          for (const g of d.models.groups) {
+            for (const m of g.models) {
+              flat.push({ id: m.id, provider: g.provider, friendlyName: m.friendlyName });
+            }
+          }
+          setLiveModels(flat);
+        }
+      })
+      .catch(() => {});
   }, []);
 
   /* ── Load conversations on mount ───────────────────────────── */
@@ -515,7 +535,7 @@ export default function ChatPage() {
                 </div>
               </div>
               <ModelPicker
-                groups={groupedPickerOptions()}
+                groups={groupedPickerOptions(liveModels)}
                 value={activeConv.model ?? ""}
                 fallbackLabel={activeAgent.defaultModel}
                 onChange={async (model) => {
