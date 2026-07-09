@@ -14,7 +14,7 @@ export const opencodeAdapter: ChatAdapter = {
   name: "Opencode",
   icon: "Code2",
   description: "Coding agent — via Mission Control gateway.",
-  defaultModel: "gateway-default",
+  defaultModel: "nvidia/nemotron-3-super-120b-a12b",
   get available() {
     return isGatewayConfigured();
   },

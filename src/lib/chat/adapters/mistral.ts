@@ -14,7 +14,7 @@ export const mistralAdapter: ChatAdapter = {
   name: "Mistral",
   icon: "Sparkles",
   description: "Mistral coding agent — via Mission Control gateway.",
-  defaultModel: "gateway-default",
+  defaultModel: "mistral-small-latest",
   get available() {
     return isGatewayConfigured();
   },

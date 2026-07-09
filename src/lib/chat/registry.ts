@@ -5,6 +5,7 @@ import { opencodeAdapter } from "./adapters/opencode";
 
 /**
  * Chat agent registry — the chat equivalent of tools.config.ts.
+ *
  * Add an agent here to make it appear in the agent picker. Each adapter owns
  * its availability logic (env configured, binary present), so the UI can show
  * which agents are ready to chat right now.

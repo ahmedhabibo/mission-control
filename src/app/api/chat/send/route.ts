@@ -25,7 +25,11 @@ export const maxDuration = 120;
  */
 export async function POST(request: Request) {
   ensureSchema();
-  const body = (await request.json()) as { conversationId: string; content: string };
+  const body = (await request.json()) as {
+    conversationId: string;
+    content: string;
+    model?: string | null;
+  };
 
   if (!body.conversationId || !body.content?.trim()) {
     return new Response(JSON.stringify({ error: "conversationId and content required" }), {
@@ -46,7 +50,16 @@ export async function POST(request: Request) {
     });
   }
 
+  // Model precedence:
+  //   1. Per-request `model` (the user just hit "retry" on a different picker)
+  //   2. Conversation-level override (set via PATCH)
+  //   3. The agent adapter's defaultModel.
+  let chosenModel: string | undefined =
+    body.model || conv.model || undefined;
   const adapter = getChatAdapter(conv.agentId);
+  if (!chosenModel && adapter) {
+    chosenModel = adapter.defaultModel;
+  }
   if (!adapter) {
     return new Response(JSON.stringify({ error: "Agent not registered" }), {
       status: 400,
@@ -92,7 +105,7 @@ export async function POST(request: Request) {
   const chatRequest: ChatRequest = {
     systemPrompt: conv.systemPrompt ?? undefined,
     history,
-    model: conv.model ?? undefined,
+    model: chosenModel,
     signal: request.signal,
   };
 

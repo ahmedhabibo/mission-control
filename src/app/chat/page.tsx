@@ -5,6 +5,14 @@ import Link from "next/link";
 import { cn } from "@/lib/utils";
 import { getIcon } from "@/lib/icons";
 import { Markdown } from "@/components/markdown";
+import { ThinkingResponse } from "@/components/chat/ThinkingResponse";
+import { ModelPicker } from "@/components/chat/ModelPicker";
+import {
+  MODEL_CATALOG,
+  modelsForProvider,
+  providerForAgent,
+  pickerOptionsFor,
+} from "@/lib/chat/models";
 import { Button } from "@/components/ui/button";
 import { StatusBadge, Badge } from "@/components/ui/badge";
 import {
@@ -17,6 +25,8 @@ import {
   ChevronDown,
   Loader2,
   ListChecks,
+  RefreshCw,
+  Eye,
 } from "lucide-react";
 
 /* ── Types (mirror API shapes) ──────────────────────────────────── */
@@ -66,10 +76,33 @@ export default function ChatPage() {
   const [selectedAgent, setSelectedAgent] = useState<string>("hermes");
   const [submittingTask, setSubmittingTask] = useState(false);
   const [taskToast, setTaskToast] = useState(false);
+  // Show the model's reasoning block ("...</think>") separately, like the Hermes WebUI.
+  // Persisted in localStorage so the user's preference survives reloads.
+  const [showThinking, setShowThinking] = useState(true);
+  // Tracks the in-flight retry per message id (so multiple messages can retry
+  // concurrently and we can show a spinner on just the right one).
+  const [retryingId, setRetryingId] = useState<number | null>(null);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const abortRef = useRef<AbortController | null>(null);
+
+  /* ── Persisted UI prefs ─────────────────────────────────────── */
+  useEffect(() => {
+    try {
+      const v = window.localStorage.getItem("mc:showThinking");
+      if (v != null) setShowThinking(v === "1");
+    } catch {
+      /* ignore */
+    }
+  }, []);
+  useEffect(() => {
+    try {
+      window.localStorage.setItem("mc:showThinking", showThinking ? "1" : "0");
+    } catch {
+      /* ignore */
+    }
+  }, [showThinking]);
 
   /* ── Load agents on mount ──────────────────────────────────── */
   useEffect(() => {
@@ -139,11 +172,16 @@ export default function ChatPage() {
   }
 
   /* ── Send a message ────────────────────────────────────────── */
-  async function send() {
-    const content = input.trim();
+  async function send(opts: { messageOverride?: string } = {}) {
+    const content = (opts.messageOverride ?? input).trim();
     if (!content || streaming || !active) return;
 
-    setInput("");
+    // Use the conversation's current model for this turn (or the agent
+    // default when it's null). The /api/chat/send route forwards `model`.
+    const conv = conversations.find((c) => c.id === active);
+    const modelId = conv?.model ?? undefined;
+
+    if (!opts.messageOverride) setInput("");
     setStreaming(true);
 
     const abort = new AbortController();
@@ -169,7 +207,7 @@ export default function ChatPage() {
       const res = await fetch("/api/chat/send", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ conversationId: active, content }),
+        body: JSON.stringify({ conversationId: active, content, model: modelId }),
         signal: abort.signal,
       });
 
@@ -243,6 +281,89 @@ export default function ChatPage() {
 
   function stopStreaming() {
     abortRef.current?.abort();
+  }
+
+  /**
+   * Retry: user pressed "retry" next to an assistant message — re-run the
+   * assistant turn with the *last user message* before this assistant message,
+   * using whichever model the conversation is currently set to. The new
+   * response overwrites the slot; older messages stay put.
+   */
+  async function retry(msg: ChatMessage) {
+    if (!active || msg.role !== "assistant") return;
+    // Find the immediately preceding user message.
+    const idx = messages.findIndex((m) => m.id === msg.id);
+    const prev = idx > 0 ? messages[idx - 1] : undefined;
+    if (!prev || prev.role !== "user") return;
+    setRetryingId(msg.id);
+    setStreaming(true);
+    // Wipe the assistant slot to "streaming" by replacing it with placeholder.
+    setMessages((list) =>
+      list.map((m) => (m.id === msg.id ? { ...m, content: "" } : m)),
+    );
+    try {
+      const conv = conversations.find((c) => c.id === active);
+      const modelId = conv?.model ?? undefined;
+      const res = await fetch("/api/chat/send", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          conversationId: active,
+          content: prev.content,
+          model: modelId,
+        }),
+      });
+      const reader = res.body?.getReader();
+      if (!reader) throw new Error("No response body");
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let fullText = "";
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n\n");
+        buffer = lines.pop() ?? "";
+        for (const line of lines) {
+          if (!line.startsWith("data: ")) continue;
+          const payload = line.slice(6).trim();
+          if (!payload) continue;
+          try {
+            const event = JSON.parse(payload);
+            if (event.type === "delta") {
+              fullText += event.content;
+              setMessages((list) =>
+                list.map((m) => (m.id === msg.id ? { ...m, content: fullText } : m)),
+              );
+            } else if (event.type === "saved") {
+              fetch(`/api/chat/conversations/${active}`)
+                .then((r) => r.json())
+                .then((d) => setMessages(d.messages ?? []))
+                .catch(() => {});
+            }
+          } catch {
+            /* ignore malformed events */
+          }
+        }
+      }
+    } catch (err) {
+      setMessages((list) =>
+        list.map((m) =>
+          m.id === msg.id
+            ? {
+                ...m,
+                content:
+                  (m.content || "") +
+                  `\n\n_Retry failed: ${err instanceof Error ? err.message : String(err)}_`,
+              }
+            : m,
+        ),
+      );
+    } finally {
+      setStreaming(false);
+      setRetryingId(null);
+      abortRef.current = null;
+    }
   }
 
   /* ── Bridge: send the current input to the task router instead ── */
@@ -381,10 +502,39 @@ export default function ChatPage() {
               </div>
               <div className="min-w-0 flex-1">
                 <div className="truncate text-sm font-medium">{activeConv.title}</div>
-                <div className="truncate text-xs text-[var(--muted-foreground)]">
-                  {activeAgent.name} · {activeConv.model ?? activeAgent.defaultModel}
+                <div className="flex items-center gap-2 truncate text-xs text-[var(--muted-foreground)]">
+                  <span>
+                    {activeAgent.name} · {activeConv.model ?? activeAgent.defaultModel}
+                  </span>
                 </div>
               </div>
+              <ModelPicker
+                options={pickerOptionsFor(modelsForProvider(providerForAgent(selectedAgent)))}
+                value={activeConv.model ?? ""}
+                fallbackLabel={activeAgent.defaultModel}
+                onChange={async (model) => {
+                  await fetch(`/api/chat/conversations/${activeConv.id}`, {
+                    method: "PATCH",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ model }),
+                  });
+                  setConversations((prev) =>
+                    prev.map((c) =>
+                      c.id === activeConv.id
+                        ? { ...c, model: model || null }
+                        : c,
+                    ),
+                  );
+                  loadConversations();
+                }}
+              />
+              <button
+                onClick={() => setShowThinking((s) => !s)}
+                title="Toggle model reasoning visibility — mirrors Hermes WebUI's `show_thinking` setting"
+                className="inline-flex h-5 w-5 items-center justify-center rounded-md border border-[var(--border)] text-[var(--muted-foreground)] hover:bg-[var(--muted)] hover:text-[var(--foreground)]"
+              >
+                <Eye className={cn("h-3 w-3", !showThinking && "opacity-50")} />
+              </button>
               <StatusBadge status={activeAgent.available ? "online" : "offline"} pulse={false} />
             </>
           ) : (
@@ -441,22 +591,53 @@ export default function ChatPage() {
                       {isUser ? (
                         <p className="whitespace-pre-wrap text-sm">{msg.content}</p>
                       ) : (
-                        <Markdown content={msg.content} />
+                        // ThinkingResponse renders the response body and splits
+                        // out any <think>...</think> reasoning into its own
+                        // collapsible section. Falls back to plain markdown
+                        // when the model didn't emit a thinking block.
+                        <ThinkingResponse
+                          content={msg.content}
+                          defaultExpanded={showThinking}
+                        />
                       )}
                       {/* Token/latency footer for assistant messages. */}
                       {!isUser && msg.latencyMs != null && (
-                        <div className="mt-2 flex gap-3 border-t border-[var(--border)] pt-1.5 text-xs text-[var(--muted-foreground)]">
+                        <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 border-t border-[var(--border)] pt-1.5 text-xs text-[var(--muted-foreground)]">
                           <span>{formatLatency(msg.latencyMs)}</span>
                           {msg.promptTokens != null && (
-                            <span>{msg.promptTokens + (msg.completionTokens ?? 0)} tokens</span>
+                            <span>
+                              {msg.promptTokens}
+                              {(msg.completionTokens ?? 0) > 0 ? `+${msg.completionTokens}` : ""} tokens
+                            </span>
+                          )}
+                          {!isUser && msg.id > 0 && (
+                            <button
+                              onClick={() => retry(msg)}
+                              disabled={retryingId === msg.id || streaming}
+                              className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 hover:bg-[var(--muted)] disabled:opacity-50"
+                              title="Re-run the assistant turn with the same user message — uses the conversation's current model."
+                            >
+                              {retryingId === msg.id ? (
+                                <Loader2 className="h-3 w-3 animate-spin" />
+                              ) : (
+                                <RefreshCw className="h-3 w-3" />
+                              )}
+                              retry
+                            </button>
                           )}
                         </div>
                       )}
                       {/* Streaming indicator */}
                       {!isUser && streaming && msg.id === 0 && !msg.content && (
-                        <div className="flex items-center gap-1.5 text-xs text-[var(--muted-foreground)]">
+                        <div className="flex items-center gap-1.5 mt-2 text-xs text-[var(--muted-foreground)]">
                           <Loader2 className="h-3 w-3 animate-spin" />
-                          thinking…
+                          waiting for response…
+                        </div>
+                      )}
+                      {!isUser && streaming && msg.id === 0 && msg.content && (
+                        <div className="flex items-center gap-1.5 mt-1.5 text-[10px] text-[var(--muted-foreground)]">
+                          <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-[var(--accent)]" />
+                          streaming…
                         </div>
                       )}
                     </div>
@@ -518,7 +699,7 @@ export default function ChatPage() {
                 <Button
                   size="md"
                   variant="primary"
-                  onClick={send}
+                  onClick={() => send()}
                   disabled={!active || !input.trim()}
                   title="Send"
                   className="h-[40px] w-[40px] p-0"

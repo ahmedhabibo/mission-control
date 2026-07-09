@@ -16,7 +16,7 @@ export const hermesAdapter: ChatAdapter = {
   name: "Hermes",
   icon: "BrainCircuit",
   description: "Main brain — via Mission Control gateway.",
-  defaultModel: "gateway-default",
+  defaultModel: "nvidia/nemotron-3-super-120b-a12b",
   get available() {
     return isGatewayConfigured();
   },
