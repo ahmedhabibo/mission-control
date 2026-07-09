@@ -108,6 +108,26 @@ export const MODEL_CATALOG: ModelEntry[] = [
     categories: ["chat", "reasoning"],
     live: false,
   },
+
+  // ── Mistral (verified when MISTRAL_API_KEY is in .env.local) ──────
+  {
+    id: "mistral-small-latest",
+    provider: "mistral",
+    friendlyName: "Mistral Small",
+    description: "Fast Mistral Small — chat, code & function calls. Strong cost-quality balance.",
+    categories: ["fast", "chat"],
+    live: true,
+    contextWindow: 32_000,
+  },
+  {
+    id: "mistral-medium-latest",
+    provider: "mistral",
+    friendlyName: "Mistral Medium",
+    description: "Mid-tier Mistral — stronger reasoning than Small.",
+    categories: ["chat", "reasoning"],
+    live: true,
+    contextWindow: 128_000,
+  },
 ];
 
 /** Filter the catalogue by provider. */

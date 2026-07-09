@@ -16,10 +16,11 @@ export const mistralAdapter: ChatAdapter = {
   description: "Mistral coding agent — via Mission Control gateway.",
   defaultModel: "mistral-small-latest",
   get available() {
-    return isGatewayConfigured();
+    return !!(process.env.MISTRAL_API_KEY || process.env.MC_GATEWAY_URL);
   },
   get unavailableReason() {
-    return "Set MC_GATEWAY_URL and MC_GATEWAY_TOKEN in .env.local";
+    if (process.env.MISTRAL_API_KEY) return "";
+    return "Add MISTRAL_API_KEY to .env.local (free at https://console.mistral.ai/api-keys)";
   },
   stream(req) {
     return streamViaGateway(this.id, {
