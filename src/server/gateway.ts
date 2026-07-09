@@ -549,6 +549,161 @@ function getMistralAgent(): AgentHandler {
   return mistralAgent;
 }
 
+interface OpenrouterAgentOptions {
+  defaultModel: string;
+  apiKey: string;
+}
+
+function createOpenrouterAgentHandler(options: OpenrouterAgentOptions): AgentHandler {
+  const { defaultModel, apiKey } = options;
+  const baseUrl = "https://openrouter.ai/api/v1";
+
+  function openrouterHealth(): HealthResult {
+    return {
+      status: "online",
+      latencyMs: 0,
+      version: "openrouter-agent",
+      detail: "OpenRouter agent — 200+ models via one key",
+    };
+  }
+
+  async function* openrouterChat(req: ChatRequest): AsyncIterable<ChatChunk> {
+    const messages: Array<{ role: string; content: string }> = [];
+    if (req.systemPrompt) messages.push({ role: "system", content: req.systemPrompt });
+    messages.push(...req.history.map(({ role, content }) => ({ role, content })));
+
+    const body = JSON.stringify({
+      model: req.model ?? defaultModel,
+      messages,
+      stream: true,
+      temperature: req.temperature ?? 0.7,
+      max_tokens: req.max_tokens ?? 1024,
+    });
+
+    let res: Response;
+    try {
+      res = await fetch(baseUrl + "/chat/completions", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: "Bearer " + apiKey,
+          "HTTP-Referer": "https://mission-control.local",
+          "X-Title": "Mission Control",
+        },
+        body,
+      });
+    } catch (err) {
+      yield { type: "error", message: "OpenRouter unreachable: " + (err instanceof Error ? err.message : String(err)) };
+      return;
+    }
+
+    if (!res.ok || !res.body) {
+      const txt = await res.text().catch(() => "");
+      yield { type: "error", message: "OpenRouter " + res.status + ": " + txt };
+      return;
+    }
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    let promptTokens = 0;
+    let completionTokens = 0;
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop() ?? "";
+      for (const rawLine of lines) {
+        const line = rawLine.replace(/\r$/, "").trim();
+        if (!line.startsWith("data:")) continue;
+        const payload = line.slice(5).trim();
+        if (!payload || payload === "[DONE]") {
+          yield { type: "done", promptTokens, completionTokens };
+          continue;
+        }
+        try {
+          const evt = JSON.parse(payload);
+          const delta = evt?.choices?.[0]?.delta?.content;
+          if (delta) yield { type: "delta", content: delta };
+          if (evt?.usage?.prompt_tokens) promptTokens = evt.usage.prompt_tokens;
+          if (evt?.usage?.completion_tokens) completionTokens = evt.usage.completion_tokens;
+        } catch {
+          /* ignore malformed */
+        }
+      }
+    }
+    yield { type: "done", promptTokens, completionTokens };
+  }
+
+  async function openrouterComplete(req: ChatRequest): Promise<ChatCompletionResult> {
+    const messages: Array<{ role: string; content: string }> = [];
+    if (req.systemPrompt) messages.push({ role: "system", content: req.systemPrompt });
+    messages.push(...req.history.map(({ role, content }) => ({ role, content })));
+
+    const body = JSON.stringify({
+      model: req.model ?? defaultModel,
+      messages,
+      stream: false,
+      temperature: req.temperature ?? 0.7,
+      max_tokens: req.max_tokens ?? 1024,
+    });
+
+    const startedAt = Date.now();
+    let res: Response;
+    try {
+      res = await fetch(baseUrl + "/chat/completions", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: "Bearer " + apiKey,
+          "HTTP-Referer": "https://mission-control.local",
+          "X-Title": "Mission Control",
+        },
+        body,
+      });
+    } catch (err) {
+      throw new Error("OpenRouter unreachable: " + (err instanceof Error ? err.message : String(err)));
+    }
+    if (!res.ok) {
+      const txt = await res.text().catch(() => "");
+      throw new Error("OpenRouter " + res.status + ": " + txt);
+    }
+    const data = await res.json();
+    const choice = data?.choices?.[0];
+    return {
+      content: choice?.message?.content ?? "",
+      promptTokens: data?.usage?.prompt_tokens ?? 0,
+      completionTokens: data?.usage?.completion_tokens ?? 0,
+      latencyMs: Date.now() - startedAt,
+    };
+  }
+
+  return {
+    id: "openrouter",
+    name: "OpenRouter",
+    description: "200+ models via one key",
+    defaultModel,
+    capabilities: ["chat", "completion"],
+    health: openrouterHealth,
+    chat: openrouterChat,
+    complete: openrouterComplete,
+  };
+}
+
+let openrouterAgent: AgentHandler | null = null;
+
+function getOpenrouterAgent(): AgentHandler {
+  if (!openrouterAgent) {
+    openrouterAgent = createOpenrouterAgentHandler({
+      defaultModel: "openai/gpt-4o-mini",
+      apiKey: (typeof process !== "undefined" ? process.env.OPENROUTER_API_KEY : "") ?? "",
+    });
+  }
+  return openrouterAgent;
+}
+
+
 // ── Agent catalogue (mock agents for direct lookup) ─────────────────
 
 const ECHO_AGENT: AgentHandler = {
@@ -603,6 +758,9 @@ function getAgent(id: string): AgentHandler | undefined {
   // Check for real Mistral agent if key is set
   if ((id === "mistral" || id === "mistral-vibe" || id === "mistral-mock") && process.env.MISTRAL_API_KEY) {
     return getMistralAgent();
+  }
+  if (id === "openrouter" && process.env.OPENROUTER_API_KEY) {
+    return getOpenrouterAgent();
   }
   // Fall back to original lookup
   const direct = AGENTS.find((a) => a.id === id);
@@ -833,6 +991,9 @@ export function startGatewayServer() {
     }
     if (process.env.MISTRAL_API_KEY) {
       console.log("[gateway] Mistral agent enabled for ids: mistral, mistral-vibe, mistral-mock");
+    if (process?.env?.OPENROUTER_API_KEY) {
+      console.log("[gateway] OpenRouter agent enabled for ids: openrouter");
+    }
     }
   });
 

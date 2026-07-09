@@ -19,7 +19,7 @@ export interface ModelEntry {
   /** Stable id used by the agent registry / gateway. */
   id: string;
   /** Provider we route through (e.g. "nvidia", "mistral"). */
-  provider: "nvidia" | "mistral" | "openai" | "anthropic";
+  provider: "nvidia" | "mistral" | "openrouter" | "openai" | "anthropic";
   /** Marketing name shown to the user, e.g. "GLM 5.2 (primary)". */
   friendlyName: string;
   /** Short summary for hover tooltips. */
@@ -128,6 +128,44 @@ export const MODEL_CATALOG: ModelEntry[] = [
     live: true,
     contextWindow: 128_000,
   },
+
+  // ── OpenRouter (gateway-routed when OPENROUTER_API_KEY is in .env.local) ─
+  {
+    id: "openai/gpt-4o-mini",
+    provider: "openrouter",
+    friendlyName: "GPT-4o Mini",
+    description: "Fast OpenAI model via OpenRouter. Strong general-purpose. Cheap.",
+    categories: ["fast", "chat"],
+    live: false,
+    contextWindow: 128_000,
+  },
+  {
+    id: "openai/gpt-4o",
+    provider: "openrouter",
+    friendlyName: "GPT-4o",
+    description: "Full GPT-4o via OpenRouter. Top-tier reasoning + vision.",
+    categories: ["primary", "reasoning"],
+    live: false,
+    contextWindow: 128_000,
+  },
+  {
+    id: "anthropic/claude-3.5-sonnet",
+    provider: "openrouter",
+    friendlyName: "Claude 3.5 Sonnet",
+    description: "Strong reasoning + code via OpenRouter. Good for long contexts.",
+    categories: ["reasoning", "code"],
+    live: false,
+    contextWindow: 200_000,
+  },
+  {
+    id: "google/gemini-2.0-flash-001",
+    provider: "openrouter",
+    friendlyName: "Gemini 2.0 Flash",
+    description: "Google's fast model via OpenRouter. Multimodal + large context.",
+    categories: ["fast", "chat"],
+    live: false,
+    contextWindow: 1_000_000,
+  },
 ];
 
 /** Filter the catalogue by provider. */
@@ -143,6 +181,8 @@ export function providerForAgent(agentId: string): ModelEntry["provider"] {
       return "nvidia";
     case "mistral-vibe":
       return "mistral";
+    case "openrouter":
+      return "openrouter";
     default:
       return "nvidia";
   }
