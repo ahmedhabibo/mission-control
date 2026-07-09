@@ -81,11 +81,17 @@ function ThinkingBlock({
   );
 }
 
-/** Parse out <think>...</think> blocks while leaving the rest of the text. */
+/** Parse out <think>...</think> blocks while leaving the rest of the text.
+ *  Also strips bare <reasoning>...</reasoning> tags (some models emit those
+ *  without the <think> prefix — Mistral, GLM). Tokens between the open and
+ *  close tags become a "think" segment with the tags themselves stripped.
+ */
 function splitThinking(content: string) {
   const out: Array<{ kind: "text" | "think"; text: string }> = [];
-  // Match `<think>...</think>` (greedy on tags, lazy on body).
-  const re = /<think>([\s\S]*?)<\/think>/g;
+  // Match `<tag>...</tag>` for the four tags we care about, sharing one regex
+  // via alternation. Lazy on body so we don't catch the user's literal
+  // `</think>` injected later.
+  const re = /<(?:think|thinking|reasoning|reflection)>([\s\S]*?)<\/(?:think|thinking|reasoning|reflection)>/gi;
   let lastIndex = 0;
   let m: RegExpExecArray | null;
   while ((m = re.exec(content)) !== null) {
@@ -100,6 +106,10 @@ function splitThinking(content: string) {
   }
   return out;
 }
+
+// Exported for unit testing — call splitThinking indirectly if needed.
+// (Default export keeps the component tree simpler.)
+export const __test = { splitThinking };
 
 /** Lightweight wrapper around the inline Markdown renderer so we don't
  *  re-implement escaping here. Skips the heavy cases (fenced code passes
