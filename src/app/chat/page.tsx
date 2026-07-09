@@ -39,6 +39,11 @@ interface ChatAgent {
   defaultModel: string;
   available: boolean;
   unavailableReason?: string;
+  /** Gateway health-check result (live ping). */
+  healthy?: boolean;
+  healthLatencyMs?: number | null;
+  healthStatus?: "online" | "degraded" | "offline";
+  healthDetail?: string;
 }
 
 interface ChatMessage {
@@ -535,7 +540,19 @@ export default function ChatPage() {
               >
                 <Eye className={cn("h-3 w-3", !showThinking && "opacity-50")} />
               </button>
-              <StatusBadge status={activeAgent.available ? "online" : "offline"} pulse={false} />
+              <StatusBadge
+                status={
+                  !activeAgent.available
+                    ? "offline"
+                    : activeAgent.healthStatus ?? (activeAgent.healthy ? "online" : "offline")
+                }
+                pulse={activeAgent.healthy && !activeAgent.healthLatencyMs}
+              />
+              {activeAgent.healthLatencyMs != null && activeAgent.healthy && (
+                <span className="text-[10px] text-[var(--muted-foreground)]">
+                  {activeAgent.healthLatencyMs}ms
+                </span>
+              )}
             </>
           ) : (
             <div className="flex-1 text-sm text-[var(--muted-foreground)]">
@@ -795,6 +812,23 @@ function EmptyState({
                       <span className="font-medium">{agent.name}</span>
                       {!agent.available && (
                         <Badge className="text-[var(--muted-foreground)]">unavailable</Badge>
+                      )}
+                      {agent.available && (
+                        <span
+                          className={cn(
+                            "inline-flex h-1.5 w-1.5 rounded-full",
+                            agent.healthy
+                              ? "bg-green-500"
+                              : agent.healthStatus === "degraded"
+                                ? "bg-yellow-500"
+                                : "bg-red-500",
+                          )}
+                          title={
+                            agent.healthy
+                              ? `Online${agent.healthLatencyMs ? ` · ${agent.healthLatencyMs}ms` : ""}`
+                              : agent.healthDetail ?? "Offline"
+                          }
+                        />
                       )}
                     </div>
                     <div className="truncate text-xs text-[var(--muted-foreground)]">
