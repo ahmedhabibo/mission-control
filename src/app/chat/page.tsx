@@ -12,6 +12,7 @@ import {
   modelsForProvider,
   providerForAgent,
   pickerOptionsFor,
+  groupedPickerOptions,
 } from "@/lib/chat/models";
 import { Button } from "@/components/ui/button";
 import { StatusBadge, Badge } from "@/components/ui/badge";
@@ -514,7 +515,7 @@ export default function ChatPage() {
                 </div>
               </div>
               <ModelPicker
-                options={pickerOptionsFor(modelsForProvider(providerForAgent(selectedAgent)))}
+                groups={groupedPickerOptions()}
                 value={activeConv.model ?? ""}
                 fallbackLabel={activeAgent.defaultModel}
                 onChange={async (model) => {

@@ -30,7 +30,20 @@ export interface ModelEntry {
   live: boolean;
   /** Context window tokens (approximate). */
   contextWindow?: number;
+  /** Relative speed indicator for the picker badge. */
+  latency?: "fast" | "medium" | "slow";
+  /** Relative cost indicator for the picker badge. */
+  price?: "free" | "cheap" | "moderate" | "expensive";
 }
+
+/** Provider display metadata for the picker group headers. */
+export const PROVIDER_LABELS: Record<ModelEntry["provider"], { label: string; icon: string }> = {
+  nvidia: { label: "NVIDIA NIM", icon: "Cpu" },
+  mistral: { label: "Mistral", icon: "Sparkles" },
+  openrouter: { label: "OpenRouter", icon: "Route" },
+  openai: { label: "OpenAI", icon: "OpenAi" },
+  anthropic: { label: "Anthropic", icon: "Anthropic" },
+};
 
 /**
  * Catalogue. Keep order roughly: primary → specialized → experimental.
@@ -45,6 +58,8 @@ export const MODEL_CATALOG: ModelEntry[] = [
     categories: ["primary", "reasoning", "code"],
     live: true,
     contextWindow: 131_072,
+    latency: "medium",
+    price: "free",
   },
   {
     id: "nvidia/nemotron-3-ultra-550b-a55b",
@@ -54,6 +69,8 @@ export const MODEL_CATALOG: ModelEntry[] = [
     categories: ["fallback", "reasoning"],
     live: false,
     contextWindow: 131_072,
+    latency: "slow",
+    price: "free",
   },
   {
     id: "meta/llama-3.1-70b-instruct",
@@ -63,6 +80,8 @@ export const MODEL_CATALOG: ModelEntry[] = [
     categories: ["fallback", "code", "chat"],
     live: false,
     contextWindow: 131_072,
+    latency: "fast",
+    price: "free",
   },
   {
     id: "meta/llama-3.3-70b-instruct",
@@ -72,6 +91,8 @@ export const MODEL_CATALOG: ModelEntry[] = [
     categories: ["fallback", "chat"],
     live: false,
     contextWindow: 131_072,
+    latency: "fast",
+    price: "free",
   },
   {
     id: "mistralai/mistral-medium-3.5-128b",
@@ -81,6 +102,8 @@ export const MODEL_CATALOG: ModelEntry[] = [
     categories: ["fallback", "long-ctx"],
     live: false,
     contextWindow: 128_000,
+    latency: "medium",
+    price: "free",
   },
   {
     id: "qwen/qwen2.5-coder-32b-instruct",
@@ -90,15 +113,19 @@ export const MODEL_CATALOG: ModelEntry[] = [
     categories: ["code", "fast"],
     live: false,
     contextWindow: 32_768,
+    latency: "fast",
+    price: "free",
   },
   {
     id: "deepseek-ai/deepseek-r1",
     provider: "nvidia",
     friendlyName: "DeepSeek R1 (reasoning)",
-    description: "Strong reasoning. Outputs <think> blocks.",
+    description: "Strong reasoning. Outputs  thinking blocks.",
     categories: ["reasoning"],
     live: false,
     contextWindow: 64_000,
+    latency: "slow",
+    price: "free",
   },
   {
     id: "z-ai/glm-5.2",
@@ -107,6 +134,8 @@ export const MODEL_CATALOG: ModelEntry[] = [
     description: "GLM series, balanced. Hermes default fallback.",
     categories: ["chat", "reasoning"],
     live: false,
+    latency: "medium",
+    price: "free",
   },
 
   // ── Mistral (verified when MISTRAL_API_KEY is in .env.local) ──────
@@ -118,6 +147,8 @@ export const MODEL_CATALOG: ModelEntry[] = [
     categories: ["fast", "chat"],
     live: true,
     contextWindow: 32_000,
+    latency: "fast",
+    price: "cheap",
   },
   {
     id: "mistral-medium-latest",
@@ -127,6 +158,8 @@ export const MODEL_CATALOG: ModelEntry[] = [
     categories: ["chat", "reasoning"],
     live: true,
     contextWindow: 128_000,
+    latency: "medium",
+    price: "moderate",
   },
 
   // ── OpenRouter (gateway-routed when OPENROUTER_API_KEY is in .env.local) ─
@@ -138,6 +171,8 @@ export const MODEL_CATALOG: ModelEntry[] = [
     categories: ["fast", "chat"],
     live: false,
     contextWindow: 128_000,
+    latency: "fast",
+    price: "cheap",
   },
   {
     id: "openai/gpt-4o",
@@ -147,6 +182,8 @@ export const MODEL_CATALOG: ModelEntry[] = [
     categories: ["primary", "reasoning"],
     live: false,
     contextWindow: 128_000,
+    latency: "medium",
+    price: "expensive",
   },
   {
     id: "anthropic/claude-3.5-sonnet",
@@ -156,6 +193,8 @@ export const MODEL_CATALOG: ModelEntry[] = [
     categories: ["reasoning", "code"],
     live: false,
     contextWindow: 200_000,
+    latency: "medium",
+    price: "moderate",
   },
   {
     id: "google/gemini-2.0-flash-001",
@@ -165,6 +204,8 @@ export const MODEL_CATALOG: ModelEntry[] = [
     categories: ["fast", "chat"],
     live: false,
     contextWindow: 1_000_000,
+    latency: "fast",
+    price: "cheap",
   },
 ];
 
@@ -201,5 +242,36 @@ export function pickerOptionsFor(models: ModelEntry[]) {
     value: m.id,
     description: m.description,
     badge: m.categories[0],
+    latency: m.latency,
+    price: m.price,
+    live: m.live,
+    contextWindow: m.contextWindow,
   }));
+}
+
+/** Grouped option set for the picker — one group per provider. */
+export interface PickerGroup {
+  provider: ModelEntry["provider"];
+  label: string;
+  options: ReturnType<typeof pickerOptionsFor>;
+}
+
+/** Group all catalogue models by provider for the full picker view. */
+export function groupedPickerOptions(): PickerGroup[] {
+  const providers: ModelEntry["provider"][] = ["nvidia", "mistral", "openrouter"];
+  return providers
+    .map((provider) => {
+      const models = modelsForProvider(provider);
+      return {
+        provider,
+        label: PROVIDER_LABELS[provider]?.label ?? provider,
+        options: pickerOptionsFor(models),
+      };
+    })
+    .filter((g) => g.options.length > 0);
+}
+
+/** All models from all providers as a flat list (for the picker when not grouped). */
+export function allPickerOptions() {
+  return pickerOptionsFor(MODEL_CATALOG);
 }
