@@ -4,7 +4,7 @@
  * The design mirrors OpenAI's chat-completions shape since it's the de-facto
  * wire format that NIM, Mistral, and most providers expose — so an
  * OpenAI-compatible agent is just a thin HTTP call, and adapters for agents
- * without an HTTP API (Opencode/Zcode) translate into the same shape.
+ * without an HTTP API (Opencode) translate into the same shape.
  */
 
 export type ChatRole = "system" | "user" | "assistant";

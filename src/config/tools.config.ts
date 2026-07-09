@@ -8,7 +8,7 @@ import type { ToolDefinition } from "@/lib/types";
  * v0.3 — tools are wired through the Mission Control Gateway.
  * Every probe of type `gateway` calls `GET /v1/agents/:id/health` on the
  * configured gateway, with no provider API key in scope here. The CLI
- * probes (`opencode`, `zcode`, `paseo`) still shell out locally for
+ * probes (`opencode`, `paseo`) still shell out locally for
  * `--version` since those binaries are user-side.
  *
  * Tools default to `enabled: false` if they need a gateway and one isn't
@@ -49,22 +49,6 @@ export const TOOLS: ToolDefinition[] = [
   },
 
   {
-    id: "zcode",
-    name: "Zcode",
-    description: "ZCode agent (local binary).",
-    icon: "Terminal",
-    category: "coding",
-    deployment: "local",
-    probe: {
-      type: "cli",
-      label: "zcode",
-      command: ["zcode", "--version"],
-      versionRegex: "v?(\\d+\\.\\d+\\.\\d+[^\\s]*)",
-      timeoutMs: 5000,
-    },
-  },
-
-  {
     id: "mistral-vibe",
     name: "Mistral Vibe",
     description: "Mistral coding agent — free tier.",
@@ -96,20 +80,7 @@ export const TOOLS: ToolDefinition[] = [
     },
   },
 
-  {
-    id: "open-design",
-    name: "Open Design",
-    description: "Claude Design alternative — design agent.",
-    icon: "Palette",
-    category: "design",
-    deployment: "remote",
-    probe: {
-      type: "gateway",
-      label: "Open Design",
-      agentId: "open-design",
-      timeoutMs: 5000,
-    },
-  },
+
 ];
 
 /** Look up a tool by id. */

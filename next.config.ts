@@ -4,6 +4,7 @@ import type { NextConfig } from "next";
 // Externalizing it keeps webpack from trying to bundle .node binaries.
 const nextConfig: NextConfig = {
   serverExternalPackages: ["better-sqlite3"],
+  allowedDevOrigins: ["100.121.26.118"],
 };
 
 export default nextConfig;

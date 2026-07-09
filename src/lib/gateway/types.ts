@@ -6,8 +6,8 @@
  * and `stream.ts` need to change.
  *
  * Conventions (matching OpenAI-ish norms already used elsewhere):
- * - Agents are addressed via stable lowercase ids: hermes, opencode, zcode,
- *   mistral-vibe, open-design, …  (matches CHAT_AGENTS ids exactly).
+ * - Agents are addressed via stable lowercase ids: hermes, opencode,
+ *   mistral-vibe, …  (matches CHAT_AGENTS ids exactly).
  * - Health: `GET /v1/agents/:id/health` → { status, latencyMs, version, detail }.
  * - Streaming chat: `POST /v1/agents/:id/chat/completions` → SSE stream of
  *   the same `delta | done | error` chunks the adapters already emit.
@@ -21,9 +21,7 @@
 export type GatewayAgentId =
   | "hermes"
   | "opencode"
-  | "zcode"
   | "mistral-vibe"
-  | "open-design"
   | "paseo";
 
 /** Health response returned by `GET /v1/agents/:id/health`. */

@@ -213,99 +213,62 @@ function createNimAgentHandler(options: NimAgentOptions): AgentHandler {
       max_tokens: req.max_tokens ?? 1024,
     });
 
-    const requestOptions = {
-      hostname: new URL(baseUrl).hostname,
-      path: new URL(baseUrl).pathname + "/chat/completions",
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${apiKey}`,
-        "Content-Length": Buffer.byteLength(body),
-      },
-    };
-
-    const queue: Array<ChatChunk | Symbol> = [];
-    const END = Symbol("end");
-    let settled = false;
-
-    function settle(value: AsyncIterable<ChatChunk>) {
-      if (settled) return;
-      settled = true;
-      return value;
+    let res: Response;
+    try {
+      res = await fetch(baseUrl + "/chat/completions", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${apiKey}`,
+        },
+        body,
+      });
+    } catch (err) {
+      yield { type: "error", message: `NIM unreachable: ${err instanceof Error ? err.message : String(err)}` };
+      return;
     }
 
-    function rejectAll(err: Error) {
-      if (settled) return;
-      settled = true;
-      throw err;
+    if (!res.ok || !res.body) {
+      const txt = await safeTextFromResponse(res);
+      yield { type: "error", message: `NIM ${res.status}: ${txt}` };
+      return;
     }
 
-    const iterator = {
-      async next() {
-        while (queue.length === 0) {
-          await new Promise(r => setTimeout(r, 10));
-        }
-        const item = queue.shift();
-        if (item === END) return { done: true, value: undefined };
-        return { done: false, value: item };
-      },
-      [Symbol.asyncIterator]() { return this; }
-    };
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
 
     try {
-      const httpReq = https.request(requestOptions, (res) => {
-        if (res.statusCode !== 200) {
-          res.resume();
-          queue.push({ type: "error", message: `NIM API returned status ${res.statusCode}` });
-          queue.push(END);
-          return;
-        }
-
-        let accumulatedContent = "";
-        res.on("data", (chunk) => {
-          const data = chunk.toString();
-          const lines = data.split("\n");
-          for (const line of lines) {
-            if (!line.startsWith("data: ")) continue;
-            const dataStr = line.slice(5).trim();
-            if (dataStr === "[DONE]") continue;
-            try {
-              const json = JSON.parse(dataStr);
-              const delta = json.choices[0]?.delta?.content ?? "";
-              if (delta) {
-                accumulatedContent += delta;
-                queue.push({ type: "delta", content: delta });
-              }
-            } catch (e) {
-              // Ignore malformed JSON
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() ?? "";
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed.startsWith("data:")) continue;
+          const dataStr = trimmed.slice(5).trim();
+          if (dataStr === "[DONE]") continue;
+          if (!dataStr) continue;
+          try {
+            const json = JSON.parse(dataStr);
+            const delta = json.choices?.[0]?.delta?.content ?? "";
+            if (delta) {
+              yield { type: "delta", content: delta };
             }
+          } catch {
+            // Ignore malformed lines.
           }
-        });
-
-        res.on("end", () => {
-          const inToks = approxTokens((req.systemPrompt ?? "") + req.history.map((m) => m.content).join(""));
-          const outToks = approxTokens(accumulatedContent);
-          queue.push({ type: "done", promptTokens: inToks, completionTokens: outToks });
-          queue.push(END);
-        });
-
-        res.on("error", (err) => {
-          queue.push({ type: "error", message: err.message });
-          queue.push(END);
-        });
-      });
-
-      httpReq.on("error", (err) => {
-        queue.push({ type: "error", message: err instanceof Error ? err.message : String(err) });
-        queue.push(END);
-      });
-
-      httpReq.write(body);
-      httpReq.end();
-
-      return iterator;
+        }
+      }
+      // Final token accounting — approximate from the prompt and history.
+      const inToks = approxTokens((req.systemPrompt ?? "") + req.history.map((m) => m.content).join(""));
+      yield { type: "done", promptTokens: inToks, completionTokens: approxTokens("") };
     } catch (err) {
-      throw err instanceof Error ? err : new Error(String(err));
+      yield { type: "error", message: err instanceof Error ? err.message : String(err) };
+    } finally {
+      try { reader.releaseLock(); } catch { /* already released */ }
     }
   }
 
@@ -407,7 +370,6 @@ function createMistralAgentHandler(options: MistralAgentOptions): AgentHandler {
   }
 
     async function* mistralChat(req: ChatRequest): AsyncIterable<ChatChunk> {
-    // Build messages array
     const messages: Array<{role: string; content: string}> = [];
     if (req.systemPrompt) {
       messages.push({ role: "system", content: req.systemPrompt });
@@ -422,87 +384,61 @@ function createMistralAgentHandler(options: MistralAgentOptions): AgentHandler {
       max_tokens: req.max_tokens ?? 1024,
     });
 
-    const requestOptions = {
-      hostname: new URL(baseUrl).hostname,
-      path: new URL(baseUrl).pathname + "/chat/completions",
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${apiKey}`,
-        "Content-Length": Buffer.byteLength(body),
-      },
-    };
+    let res: Response;
+    try {
+      res = await fetch(baseUrl + "/chat/completions", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${apiKey}`,
+        },
+        body,
+      });
+    } catch (err) {
+      yield { type: "error", message: `Mistral unreachable: ${err instanceof Error ? err.message : String(err)}` };
+      return;
+    }
 
-    const queue: Array<ChatChunk | Symbol> = [];
-    const END = Symbol("end");
-    let settled = false;
+    if (!res.ok || !res.body) {
+      const txt = await safeTextFromResponse(res);
+      yield { type: "error", message: `Mistral ${res.status}: ${txt}` };
+      return;
+    }
 
-    const iterator = {
-      async next() {
-        while (queue.length === 0) {
-          await new Promise(r => setTimeout(r, 10));
-        }
-        const item = queue.shift();
-        if (item === END) return { done: true, value: undefined };
-        return { done: false, value: item };
-      },
-      [Symbol.asyncIterator]() { return this; }
-    };
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
 
     try {
-      const httpReq = https.request(requestOptions, (res) => {
-        if (res.statusCode !== 200) {
-          res.resume();
-          queue.push({ type: "error", message: `Mistral API returned status ${res.statusCode}` });
-          queue.push(END);
-          return;
-        }
-
-        let accumulatedContent = "";
-        res.on("data", (chunk) => {
-          const data = chunk.toString();
-          const lines = data.split("\n");
-          for (const line of lines) {
-            if (!line.startsWith("data: ")) continue;
-            const dataStr = line.slice(5).trim();
-            if (dataStr === "[DONE]") continue;
-            try {
-              const json = JSON.parse(dataStr);
-              const delta = json.choices[0]?.delta?.content ?? "";
-              if (delta) {
-                accumulatedContent += delta;
-                queue.push({ type: "delta", content: delta });
-              }
-            } catch (e) {
-              // Ignore malformed JSON
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() ?? "";
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed.startsWith("data:")) continue;
+          const dataStr = trimmed.slice(5).trim();
+          if (dataStr === "[DONE]") continue;
+          if (!dataStr) continue;
+          try {
+            const json = JSON.parse(dataStr);
+            const delta = json.choices?.[0]?.delta?.content ?? "";
+            if (delta) {
+              yield { type: "delta", content: delta };
             }
+          } catch {
+            // Ignore malformed lines.
           }
-        });
-
-        res.on("end", () => {
-          const inToks = approxTokens((req.systemPrompt ?? "") + req.history.map((m) => m.content).join(""));
-          const outToks = approxTokens(accumulatedContent);
-          queue.push({ type: "done", promptTokens: inToks, completionTokens: outToks });
-          queue.push(END);
-        });
-
-        res.on("error", (err) => {
-          queue.push({ type: "error", message: err.message });
-          queue.push(END);
-        });
-      });
-
-      httpReq.on("error", (err) => {
-        queue.push({ type: "error", message: err instanceof Error ? err.message : String(err) });
-        queue.push(END);
-      });
-
-      httpReq.write(body);
-      httpReq.end();
-
-      return iterator;
+        }
+      }
+      const inToks = approxTokens((req.systemPrompt ?? "") + req.history.map((m) => m.content).join(""));
+      yield { type: "done", promptTokens: inToks, completionTokens: approxTokens("") };
     } catch (err) {
-      throw err instanceof Error ? err : new Error(String(err));
+      yield { type: "error", message: err instanceof Error ? err.message : String(err) };
+    } finally {
+      try { reader.releaseLock(); } catch { /* already released */ }
     }
   }
 
@@ -591,9 +527,9 @@ function getNimAgent(): AgentHandler {
       id: "hermes",
       name: "Hermes (NVIDIA NIM)",
       description: "Hermes agent powered by NVIDIA NIM",
-      defaultModel: "nemotron-3-super-120b-a12b",
+      defaultModel: process.env.NIM_DEFAULT_MODEL ?? "nvidia/nemotron-3-super-120b-a12b",
       capabilities: ["chat", "completion"],
-      apiKey: process.env.MC_GATEWAY_NIM_KEY ?? "",
+      apiKey: process.env.NIM_API_KEY ?? "",
     });
   }
   return nimAgent;
@@ -607,7 +543,7 @@ function getMistralAgent(): AgentHandler {
       description: "Mistral AI agent",
       defaultModel: "mistral-small-latest",
       capabilities: ["chat", "completion"],
-      apiKey: process.env.MC_GATEWAY_MISTRAL_KEY ?? "",
+      apiKey: process.env.MISTRAL_API_KEY ?? "",
     });
   }
   return mistralAgent;
@@ -661,11 +597,11 @@ const ALIAS_BACKEND: Record<string, AgentHandler> = {
 // Get agent by id, with fallback to mocks when keys are not set
 function getAgent(id: string): AgentHandler | undefined {
   // Check for real Hermes agent (NIM) if key is set
-  if ((id === "hermes" || id === "hermes-mock") && process.env.MC_GATEWAY_NIM_KEY) {
+  if ((id === "hermes" || id === "hermes-mock") && process.env.NIM_API_KEY) {
     return getNimAgent();
   }
   // Check for real Mistral agent if key is set
-  if ((id === "mistral" || id === "mistral-vibe" || id === "mistral-mock") && process.env.MC_GATEWAY_MISTRAL_KEY) {
+  if ((id === "mistral" || id === "mistral-vibe" || id === "mistral-mock") && process.env.MISTRAL_API_KEY) {
     return getMistralAgent();
   }
   // Fall back to original lookup
@@ -892,10 +828,10 @@ export function startGatewayServer() {
       console.log(`[gateway] auth: open (no MC_GATEWAY_TOKEN set)`);
     }
     // Log if real agents are enabled
-    if (process.env.MC_GATEWAY_NIM_KEY) {
+    if (process.env.NIM_API_KEY) {
       console.log("[gateway] NIM agent enabled for ids: hermes, hermes-mock");
     }
-    if (process.env.MC_GATEWAY_MISTRAL_KEY) {
+    if (process.env.MISTRAL_API_KEY) {
       console.log("[gateway] Mistral agent enabled for ids: mistral, mistral-vibe, mistral-mock");
     }
   });
@@ -905,6 +841,16 @@ export function startGatewayServer() {
   });
 
   return server;
+}
+
+/** Helper: read response body text safely, with a cap. */
+async function safeTextFromResponse(res: Response): Promise<string> {
+  try {
+    const text = await res.clone().text();
+    return text.slice(0, 200);
+  } catch {
+    return res.statusText;
+  }
 }
 
 // Direct CLI entry — `node .../gateway.js` boots the server.

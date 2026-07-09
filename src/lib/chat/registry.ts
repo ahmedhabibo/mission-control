@@ -2,7 +2,6 @@ import type { ChatAdapter } from "./types";
 import { hermesAdapter } from "./adapters/hermes";
 import { mistralAdapter } from "./adapters/mistral";
 import { opencodeAdapter } from "./adapters/opencode";
-import { zcodeAdapter } from "./adapters/zcode";
 
 /**
  * Chat agent registry — the chat equivalent of tools.config.ts.
@@ -14,7 +13,6 @@ export const CHAT_AGENTS: ChatAdapter[] = [
   hermesAdapter,
   mistralAdapter,
   opencodeAdapter,
-  zcodeAdapter,
 ];
 
 /** Look up an adapter by id. */

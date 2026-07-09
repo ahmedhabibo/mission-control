@@ -324,11 +324,11 @@ export default function ChatPage() {
             const agent = agents.find((a) => a.id === conv.agentId);
             const Icon = getIcon(agent?.icon ?? "Terminal");
             return (
-              <button
+              <div
                 key={conv.id}
                 onClick={() => setActive(conv.id)}
                 className={cn(
-                  "group flex w-full items-start gap-2.5 rounded-lg px-2.5 py-2 text-left text-sm transition-colors",
+                  "group flex w-full items-start gap-2.5 rounded-lg px-2.5 py-2 text-left text-sm transition-colors cursor-pointer",
                   active === conv.id
                     ? "bg-[var(--muted)]"
                     : "hover:bg-[var(--muted)]/50",
@@ -351,7 +351,7 @@ export default function ChatPage() {
                 >
                   <Trash2 className="h-3 w-3" />
                 </button>
-              </button>
+              </div>
             );
           })}
         </div>

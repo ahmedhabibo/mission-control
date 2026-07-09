@@ -17,7 +17,7 @@ const geistMono = Geist_Mono({
 
 export const metadata: Metadata = {
   title: "Mission Control — Agent OS",
-  description: "Status board for the AI tool stack: Hermes, Opencode, Zcode, Mistral, Paseo, Open Design.",
+  description: "Status board for the AI tool stack: Hermes, Opencode, Mistral Vibe, Paseo.",
 };
 
 export default function RootLayout({

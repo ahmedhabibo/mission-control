@@ -12,7 +12,7 @@ export type HealthStatus = "online" | "degraded" | "offline" | "unknown";
 /**
  * Probe adapters. A tool's `probe` field uses exactly one of these shapes.
  * - `http`: ping an HTTP endpoint (gated by the gateway for any agent).
- * - `cli`: run a local command, success = exit 0 (opencode, zcode, paseo).
+ * - `cli`: run a local command, success = exit 0 (opencode, paseo).
  * - `composite`: run several sub-probes and roll up their results.
  * - `gateway`: ask the Mission Control gateway about the agent.
  */

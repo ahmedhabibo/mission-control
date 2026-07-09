@@ -13,7 +13,7 @@ import type { Intent, RoutingDecision } from "./types";
 /** Intent → ordered agent preferences (highest priority first). */
 const ROUTING: Record<Intent, string[]> = {
   // Coding tasks: coding agents first, general brain as fallback.
-  code: ["opencode", "zcode", "hermes", "mistral-vibe"],
+  code: ["opencode", "hermes", "mistral-vibe"],
   // Design tasks: dedicated design agent first, brain as fallback.
   design: ["hermes", "mistral-vibe"],
   // Research: the general-purpose brains.
