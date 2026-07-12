@@ -3,6 +3,7 @@ import { conversations, messages } from "@/lib/db/schema";
 import { eq } from "drizzle-orm";
 import { getChatAdapter } from "@/lib/chat/registry";
 import type { ChatRequest } from "@/lib/chat/types";
+import { sendChatSchema, formatZodError } from "@/lib/validation";
 
 export const dynamic = "force-dynamic";
 // A streaming chat turn can take a while; don't short-circuit it.
@@ -25,23 +26,21 @@ export const maxDuration = 120;
  */
 export async function POST(request: Request) {
   ensureSchema();
-  const body = (await request.json()) as {
-    conversationId: string;
-    content: string;
-    model?: string | null;
-  };
-
-  if (!body.conversationId || !body.content?.trim()) {
-    return new Response(JSON.stringify({ error: "conversationId and content required" }), {
+  const json = await request.json().catch(() => ({}));
+  const parsed = sendChatSchema.safeParse(json);
+  if (!parsed.success) {
+    return new Response(JSON.stringify({ error: formatZodError(parsed.error) }), {
       status: 400,
       headers: { "Content-Type": "application/json" },
     });
   }
+  const { conversationId, content } = parsed.data;
+  const body = { ...parsed.data, model: json.model ?? null };
 
   const conv = db
     .select()
     .from(conversations)
-    .where(eq(conversations.id, body.conversationId))
+    .where(eq(conversations.id, conversationId))
     .all()[0];
   if (!conv) {
     return new Response(JSON.stringify({ error: "Conversation not found" }), {

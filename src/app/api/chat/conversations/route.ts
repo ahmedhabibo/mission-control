@@ -4,6 +4,7 @@ import { conversations } from "@/lib/db/schema";
 import { desc, eq } from "drizzle-orm";
 import { newConversationId } from "@/lib/chat/id";
 import { getChatAdapter } from "@/lib/chat/registry";
+import { createConversationSchema, formatZodError } from "@/lib/validation";
 
 export const dynamic = "force-dynamic";
 
@@ -24,29 +25,29 @@ export async function GET() {
 
 export async function POST(request: Request) {
   ensureSchema();
-  const body = (await request.json()) as {
-    agentId: string;
-    title?: string;
-    systemPrompt?: string;
-    model?: string;
-  };
+  const json = await request.json().catch(() => ({}));
+  const parsed = createConversationSchema.safeParse(json);
+  if (!parsed.success) {
+    return NextResponse.json({ error: formatZodError(parsed.error) }, { status: 400 });
+  }
+  const { agentId, title: titleInput, systemPrompt, model } = parsed.data;
 
-  const adapter = getChatAdapter(body.agentId);
+  const adapter = getChatAdapter(agentId);
   if (!adapter) {
     return NextResponse.json({ error: "Unknown agent" }, { status: 400 });
   }
 
   const id = newConversationId();
-  const title = body.title?.trim() || "New conversation";
+  const title = titleInput?.trim() || "New conversation";
   const now = new Date().toISOString();
 
   db.insert(conversations)
     .values({
       id,
       title,
-      agentId: body.agentId,
-      systemPrompt: body.systemPrompt ?? null,
-      model: body.model ?? null,
+      agentId,
+      systemPrompt: systemPrompt ?? null,
+      model: model ?? null,
       createdAt: now,
       updatedAt: now,
     })

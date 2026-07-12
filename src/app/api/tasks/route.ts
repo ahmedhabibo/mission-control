@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { ensureSchema } from "@/lib/db/client";
 import { createTask, listTasks } from "@/lib/tasks/runner";
-import type { Intent } from "@/lib/tasks/types";
+import { createTaskSchema, formatZodError } from "@/lib/validation";
 
 export const dynamic = "force-dynamic";
 
@@ -17,26 +17,20 @@ export async function GET() {
 
 export async function POST(request: Request) {
   ensureSchema();
-  const body = (await request.json()) as {
-    prompt?: string;
-    title?: string;
-    intentHint?: Intent | "auto";
-    priority?: number;
-    chainId?: string;
-    parentIds?: string[];
-  };
-
-  if (!body.prompt?.trim()) {
-    return NextResponse.json({ error: "prompt is required" }, { status: 400 });
+  const json = await request.json().catch(() => ({}));
+  const parsed = createTaskSchema.safeParse(json);
+  if (!parsed.success) {
+    return NextResponse.json({ error: formatZodError(parsed.error) }, { status: 400 });
   }
+  const { prompt, title, intentHint, priority, chainId, parentIds } = parsed.data;
 
   const task = await createTask({
-    prompt: body.prompt,
-    title: body.title,
-    intentHint: body.intentHint ?? "auto",
-    priority: body.priority,
-    chainId: body.chainId,
-    parentIds: body.parentIds,
+    prompt,
+    title,
+    intentHint,
+    priority,
+    chainId,
+    parentIds,
   });
   return NextResponse.json({ task });
 }

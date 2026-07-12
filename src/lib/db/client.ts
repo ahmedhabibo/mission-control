@@ -35,6 +35,16 @@ if (process.env.NODE_ENV !== "production") globalThis.__mcDb = { db, raw };
 
 /** Run on server boot to ensure tables exist. */
 export function ensureSchema() {
+  // Run numbered migrations first (creates new tables from migrations/*.sql).
+  // Falls back to ensureSchema() for backward compat — existing DBs that
+  // were created before the migration system continue to work.
+  try {
+    const { runMigrations } = require("@/lib/migrations/runner");
+    runMigrations();
+  } catch (err) {
+    console.warn("[db] migration runner not available, falling back to ensureSchema() only:", err);
+  }
+
   raw.exec(`
     CREATE TABLE IF NOT EXISTS tool_overrides (
       tool_id TEXT PRIMARY KEY,
