@@ -1,595 +1,495 @@
 "use client";
 
+import { useEffect, useState } from "react";
 import Link from "next/link";
-import { useQuery } from "@tanstack/react-query";
-import {
-  Activity,
-  ArrowUpRight,
-  CheckCircle2,
-  Clock,
-  Cpu,
-  Hash,
-  ListChecks,
-  MessageSquare,
-  Plug,
-  RefreshCcw,
-  XCircle,
-} from "lucide-react";
-import { Card } from "@/components/ui/card";
-import { Badge, StatusBadge } from "@/components/ui/badge";
-import { cn, formatLatency, timeAgo } from "@/lib/utils";
-import type { HealthStatus } from "@/lib/types";
-import {
-  UptimeTrendChart,
-  TokenBurnChart,
-  TaskThroughputChart,
-  AgentDistributionChart,
-} from "@/components/analytics";
-import {
-  transformUptimeData,
-  transformTokenUsageData,
-  transformTaskThroughputData,
-  transformAgentDistData,
-} from "@/lib/analytics/transforms";
+import { ArrowUpRight, Cpu, MessageSquare, ListChecks, Zap, Activity } from "lucide-react";
 
-/**
- * Dashboard — analytics overview of the agent stack.
- *
- * Live data comes from `/api/dashboard`, which itself reads from
- * `status_history`, `tasks`, `conversations` and the runner snapshot. No
- * hardcoded numbers; everything reflects the last sweep or compute run.
- */
+import { cn, timeAgo } from "@/lib/utils";
 
-type StatusDist = Record<string, number>;
+function formatNumber(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`;
+  return String(n);
+}
 
-type DashboardTool = {
-  id: string;
-  name: string;
-  category: string;
-  status: HealthStatus;
-  latencyMs: number | null;
-  uptimePct: number | null;
-  avgLatencyMs: number | null;
-  p95LatencyMs: number | null;
-  checks: number;
-};
-
-type TaskStatusBucket = {
-  count: number;
-  avgLatencyMs: number | null;
-  tokens: { prompt: number; completion: number };
-};
-
-type DashboardData = {
-  generatedAt: string;
-  gateway: { configured: boolean };
-  lastSweep: string | null;
-  tools: DashboardTool[];
-  statusDistribution: StatusDist;
-  tasks: {
-    total: number;
-    byStatus: Record<string, TaskStatusBucket>;
+interface AnalyticsData {
+  agents: Array<{
+    id: string;
+    name: string;
+    taskCount: number;
+    doneCount: number;
+    failedCount: number;
+    successRate: number;
     totalTokens: number;
-    recent: {
-      id: string;
-      title: string;
-      status: string;
-      intent: string | null;
-      assignedAgent: string | null;
-      createdAt: string;
-      completedAt: string | null;
-      latencyMs: number | null;
-    }[];
-  };
-  conversations: {
-    total: number;
+    avgLatencyMs: number | null;
+    lastUsedAt: string | null;
+  }>;
+  tokenUsageByDay: Array<{ date: string; promptTokens: number; completionTokens: number }>;
+  tasksByDay: Array<{ date: string; count: number }>;
+  intentDistribution: Array<{ intent: string; count: number }>;
+  statusDistribution: Array<{ status: string; count: number }>;
+  totals: {
+    tasks: number;
+    agents: number;
+    sessions: number;
     messages: number;
-    lastActivityAt: string | null;
-    recent: {
-      id: string;
-      title: string;
-      agentId: string;
-      updatedAt: string;
-    }[];
+    totalTokens: number;
   };
+  recentActivity: Array<{
+    agentId: string;
+    taskId: string;
+    title: string;
+    status: string;
+    intent: string | null;
+    createdAt: string;
+    promptTokens: number;
+    completionTokens: number;
+  }>;
+  available: boolean;
+}
+
+const INTENT_COLORS: Record<string, string> = {
+  code: "#3b82f6",
+  design: "#ec4899",
+  research: "#10b981",
+  knowledge: "#a855f7",
+  chat: "#f59e0b",
+};
+
+const STATUS_COLORS: Record<string, string> = {
+  queued: "#a3a3a3",
+  running: "#6366f1",
+  done: "#22c55e",
+  failed: "#ef4444",
+  cancelled: "#6b7280",
 };
 
 export default function DashboardPage() {
-  const { data, isLoading, dataUpdatedAt, refetch, isFetching } = useQuery<DashboardData>({
-    queryKey: ["dashboard"],
-    queryFn: () => fetch("/api/dashboard").then((r) => r.json()),
-    refetchInterval: 15_000,
-  });
+  const [data, setData] = useState<AnalyticsData | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [days, setDays] = useState(7);
 
-  const stats = data?.statusDistribution ?? {};
-  const totalTools = (data?.tools.length ?? 0) || 0;
-  const onlineTools = stats.online ?? 0;
-  const offlineTools = stats.offline ?? 0;
-  const degradedTools = stats.degraded ?? 0;
-  const avgUptime = average(data?.tools.map((t) => t.uptimePct) ?? []);
+  async function load() {
+    try {
+      const res = await fetch(`/api/dashboard/analytics?days=${days}`, { cache: "no-store" });
+      if (!res.ok) return;
+      const d = (await res.json()) as AnalyticsData;
+      setData(d);
+      setLoading(false);
+    } catch {
+      /* offline */
+    }
+  }
 
-  // Chart data transforms
-  const uptimeChartData = data ? transformUptimeData(data.tools) : [];
-  const tokenChartData = data ? transformTokenUsageData(data.tasks.byStatus) : [];
-  const throughputChartData = data ? transformTaskThroughputData(data.tasks.byStatus) : [];
-  const agentDistChartData = data ? transformAgentDistData(data.statusDistribution) : [];
+  useEffect(() => {
+    load();
+    const t = setInterval(load, 15_000);
+    return () => clearInterval(t);
+  }, [days]);
+
+  const totals = data?.totals;
+  const agentsCount = totals?.agents ?? 0;
+  const tasksCount = totals?.tasks ?? 0;
+  const tokensCount = totals?.totalTokens ?? 0;
+  const sessionsCount = totals?.sessions ?? 0;
+  const messagesCount = totals?.messages ?? 0;
+  const agents = data?.agents ?? [];
+  const recent = data?.recentActivity ?? [];
 
   return (
     <div className="mx-auto max-w-7xl px-6 py-8">
-      {/* Header */}
-      <div className="mb-8 flex flex-wrap items-end justify-between gap-4">
+      <header className="mb-6 flex flex-wrap items-end justify-between gap-4">
         <div>
           <h1 className="text-2xl font-bold tracking-tight">Dashboard</h1>
           <p className="mt-1 text-sm text-[var(--muted-foreground)]">
-            Live analytics across your agent stack ·{" "}
-            <span
-              className={cn(
-                "font-medium",
-                data?.gateway.configured
-                  ? "text-[var(--status-online)]"
-                  : "text-[var(--status-unknown)]",
-              )}
-            >
-              gateway {data?.gateway.configured ? "online" : "offline"}
-            </span>
-            {data?.lastSweep ? (
-              <>
-                {" · "}
-                <span>last sweep {timeAgo(data.lastSweep)}</span>
-              </>
-            ) : null}
+            Agent analytics · {totals ? `${tasksCount} tasks · ${formatNumber(tokensCount)} tokens` : "loading…"}
           </p>
         </div>
-        <button
-          onClick={() => refetch()}
-          disabled={isFetching}
-          className="inline-flex items-center gap-1.5 rounded-md border border-[var(--border)] bg-[var(--card)] px-3 py-1.5 text-xs font-medium text-[var(--muted-foreground)] hover:bg-[var(--muted)] disabled:opacity-60"
-        >
-          <RefreshCcw className={cn("h-3.5 w-3.5", isFetching && "animate-spin")} />
-          Refresh
-        </button>
-      </div>
+        <div className="flex items-center gap-2">
+          <select
+            value={days}
+            onChange={(e) => setDays(Number(e.target.value))}
+            className="h-9 rounded-md border border-[var(--border)] bg-[var(--card)] px-3 text-sm focus:border-[var(--ring)] focus:outline-none"
+          >
+            <option value={7}>Last 7 days</option>
+            <option value={14}>Last 14 days</option>
+            <option value={30}>Last 30 days</option>
+          </select>
+          <button
+            onClick={load}
+            className="inline-flex items-center gap-1.5 rounded-md border border-[var(--border)] bg-[var(--card)] px-3 py-1.5 text-xs font-medium text-[var(--muted-foreground)] hover:bg-[var(--muted)]"
+          >
+            <Zap className="h-3.5 w-3.5" /> Refresh
+          </button>
+        </div>
+      </header>
 
-      {/* Top KPI tiles */}
-      <div className="mb-6 grid grid-cols-2 gap-3 sm:grid-cols-4">
-        <KpiTile
-          label="Tools online"
-          value={`${onlineTools}/${totalTools}`}
-          hint={`${offlineTools} offline · ${degradedTools} degraded`}
-          icon={<CheckCircle2 className="h-4 w-4 text-[var(--status-online)]" />}
-        />
-        <KpiTile
-          label="Avg uptime"
-          value={avgUptime !== null ? `${avgUptime.toFixed(1)}%` : "—"}
-          hint="across enabled tools"
-          icon={<Activity className="h-4 w-4 text-[var(--accent)]" />}
-        />
-        <KpiTile
-          label="Tasks total"
-          value={data?.tasks.total ?? 0}
-          hint={
-            data
-              ? `${data.tasks.byStatus.running?.count ?? 0} running · ${
-                  data.tasks.byStatus.queued?.count ?? 0
-                } queued`
-              : undefined
-          }
-          icon={<ListChecks className="h-4 w-4 text-[var(--accent)]" />}
-        />
-        <KpiTile
-          label="Tokens used"
-          value={formatTokens(data?.tasks.totalTokens)}
-          hint="across completed tasks"
-          icon={<Cpu className="h-4 w-4 text-[var(--accent)]" />}
-        />
-      </div>
-
-      {/* Gateway banner */}
-      {data && !data.gateway.configured ? (
-        <Card className="mb-6 flex items-start gap-3 border-[var(--status-unknown)]/30 bg-[var(--status-unknown)]/5 p-4">
-          <Plug className="mt-0.5 h-4 w-4 text-[var(--status-unknown)]" />
-          <div className="text-sm">
-            <div className="font-semibold text-[var(--foreground)]">
-              Gateway not configured
-            </div>
-            <div className="mt-0.5 text-[var(--muted-foreground)]">
-              Set <code className="rounded bg-[var(--muted)] px-1 font-mono">MC_GATEWAY_URL</code>{" "}
-              and{" "}
-              <code className="rounded bg-[var(--muted)] px-1 font-mono">MC_GATEWAY_TOKEN</code>{" "}
-              in <code className="rounded bg-[var(--muted)] px-1 font-mono">.env.local</code> to
-              light up the rest of the board.
-            </div>
+      {loading || !data ? (
+        <Skeleton />
+      ) : !data.available ? (
+        <div className="rounded-xl border border-dashed border-[var(--border)] p-12 text-center text-sm text-[var(--muted-foreground)]">
+          No analytics data available yet. Submit tasks to populate the dashboard.
+        </div>
+      ) : (
+        <div className="space-y-6">
+          {/* ── KPI tiles ────────────────────────────────────────── */}
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-5">
+            <Kpi label="Tasks" value={tasksCount} icon={<ListChecks className="h-4 w-4 text-[var(--accent)]" />} />
+            <Kpi label="Sessions" value={sessionsCount} icon={<MessageSquare className="h-4 w-4 text-[var(--accent)]" />} />
+            <Kpi label="Messages" value={messagesCount} icon={<MessageSquare className="h-4 w-4 text-pink-500" />} />
+            <Kpi label="Tokens" value={formatNumber(tokensCount)} icon={<Cpu className="h-4 w-4 text-amber-500" />} />
+            <Kpi label="Agents used" value={`${agentsCount}`} icon={<Activity className="h-4 w-4 text-emerald-500" />} />
           </div>
-        </Card>
-      ) : null}
 
-      {/* Analytics charts grid */}
-      <div className="mb-4 grid grid-cols-1 gap-4 lg:grid-cols-2">
-        <Card className="p-4">
-          <div className="mb-3 flex items-center justify-between">
-            <h2 className="text-sm font-semibold">Uptime trend</h2>
-            <span className="text-xs text-[var(--muted-foreground)]">
-              per tool · last sweep
-            </span>
-          </div>
-          {isLoading || !data ? (
-            <Skeleton rows={4} />
-          ) : (
-            <UptimeTrendChart data={uptimeChartData} />
-          )}
-        </Card>
-
-        <Card className="p-4">
-          <div className="mb-3 flex items-center justify-between">
-            <h2 className="text-sm font-semibold">Token burn</h2>
-            <span className="text-xs text-[var(--muted-foreground)]">
-              prompt vs completion
-            </span>
-          </div>
-          {isLoading || !data ? (
-            <Skeleton rows={4} />
-          ) : (
-            <TokenBurnChart data={tokenChartData} />
-          )}
-        </Card>
-
-        <Card className="p-4">
-          <div className="mb-3 flex items-center justify-between">
-            <h2 className="text-sm font-semibold">Task throughput</h2>
-            <span className="text-xs text-[var(--muted-foreground)]">
-              count by status
-            </span>
-          </div>
-          {isLoading || !data ? (
-            <Skeleton rows={4} />
-          ) : (
-            <TaskThroughputChart data={throughputChartData} />
-          )}
-        </Card>
-
-        <Card className="p-4">
-          <div className="mb-3 flex items-center justify-between">
-            <h2 className="text-sm font-semibold">Agent distribution</h2>
-            <span className="text-xs text-[var(--muted-foreground)]">
-              tools by health
-            </span>
-          </div>
-          {isLoading || !data ? (
-            <Skeleton rows={4} />
-          ) : (
-            <AgentDistributionChart data={agentDistChartData} />
-          )}
-        </Card>
-      </div>
-
-      {/* Two columns: tool health table + task distribution */}
-      <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
-        {/* Tool health */}
-        <Card className="lg:col-span-2 p-4">
-          <div className="mb-3 flex items-center justify-between">
-            <h2 className="text-sm font-semibold">Tool health</h2>
-            <Link
-              href="/status"
-              className="inline-flex items-center gap-1 text-xs font-medium text-[var(--accent)] hover:underline"
-            >
-              All tools <ArrowUpRight className="h-3 w-3" />
-            </Link>
-          </div>
-          {isLoading || !data ? (
-            <Skeleton rows={5} />
-          ) : data.tools.length === 0 ? (
-            <Empty />
-          ) : (
-            <div className="overflow-x-auto">
-              <table className="w-full text-xs">
-                <thead>
-                  <tr className="border-b border-[var(--border)] text-left text-[var(--muted-foreground)]">
-                    <th className="py-2 font-medium">Tool</th>
-                    <th className="py-2 font-medium">Status</th>
-                    <th className="py-2 text-right font-medium">Uptime</th>
-                    <th className="py-2 text-right font-medium">Avg latency</th>
-                    <th className="py-2 text-right font-medium">p95</th>
-                    <th className="py-2 text-right font-medium">Checks</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {data.tools.map((t) => (
-                    <tr
-                      key={t.id}
-                      className="border-b border-[var(--border)]/60 last:border-0"
-                    >
-                      <td className="py-2">
-                        <div className="font-medium text-[var(--foreground)]">{t.name}</div>
-                        <div className="font-mono text-[10px] text-[var(--muted-foreground)]">
-                          {t.id} · {t.category}
-                        </div>
-                      </td>
-                      <td className="py-2">
-                        <StatusBadge status={t.status} pulse={false} />
-                      </td>
-                      <td className="py-2 text-right font-mono tabular-nums text-[var(--muted-foreground)]">
-                        {t.uptimePct === null ? "—" : `${t.uptimePct.toFixed(1)}%`}
-                      </td>
-                      <td className="py-2 text-right font-mono tabular-nums text-[var(--muted-foreground)]">
-                        {formatLatency(t.avgLatencyMs)}
-                      </td>
-                      <td className="py-2 text-right font-mono tabular-nums text-[var(--muted-foreground)]">
-                        {formatLatency(t.p95LatencyMs)}
-                      </td>
-                      <td className="py-2 text-right font-mono tabular-nums text-[var(--muted-foreground)]">
-                        {t.checks || 0}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </Card>
-
-        {/* Task distribution */}
-        <Card className="p-4">
-          <div className="mb-3 flex items-center justify-between">
-            <h2 className="text-sm font-semibold">Tasks by status</h2>
-            <Link
-              href="/tasks"
-              className="inline-flex items-center gap-1 text-xs font-medium text-[var(--accent)] hover:underline"
-            >
-              Queue <ArrowUpRight className="h-3 w-3" />
-            </Link>
-          </div>
-          {!data ? (
-            <Skeleton rows={4} />
-          ) : data.tasks.total === 0 ? (
-            <Empty hint="No tasks submitted yet." />
-          ) : (
-            <div className="space-y-3">
-              {([
-                ["done", "Done"],
-                ["running", "Running"],
-                ["queued", "Queued"],
-                ["failed", "Failed"],
-                ["cancelled", "Cancelled"],
-              ] as const).map(([key, label]) => {
-                const bucket = data.tasks.byStatus[key];
-                const count = bucket?.count ?? 0;
-                const pct =
-                  data.tasks.total > 0
-                    ? Math.round((count / data.tasks.total) * 100)
-                    : 0;
-                const tone =
-                  key === "done"
-                    ? "var(--status-online)"
-                    : key === "failed"
-                      ? "var(--status-offline)"
-                      : key === "running"
-                        ? "var(--accent)"
-                        : key === "queued"
-                          ? "var(--status-unknown)"
-                          : "var(--muted-foreground)";
-                return (
-                  <div key={key}>
-                    <div className="mb-1 flex items-center justify-between text-xs">
-                      <span className="text-[var(--muted-foreground)]">{label}</span>
-                      <span className="font-mono tabular-nums">
-                        {count}
-                        <span className="ml-1 text-[var(--muted-foreground)]">({pct}%)</span>
-                      </span>
-                    </div>
-                    <div className="h-1.5 w-full overflow-hidden rounded-full bg-[var(--muted)]">
-                      <div
-                        className="h-full rounded-full"
-                        style={{ width: `${pct}%`, backgroundColor: tone }}
-                      />
-                    </div>
-                  </div>
-                );
-              })}
-              {data.tasks.byStatus.done ? (
-                <div className="mt-3 flex items-center justify-between border-t border-[var(--border)]/60 pt-2 text-xs">
-                  <span className="text-[var(--muted-foreground)]">Avg latency</span>
-                  <span className="font-mono tabular-nums">
-                    {formatLatency(data.tasks.byStatus.done.avgLatencyMs)}
-                  </span>
-                </div>
-              ) : null}
-            </div>
-          )}
-        </Card>
-      </div>
-
-      {/* Recent activity */}
-      <div className="mt-4 grid grid-cols-1 gap-4 lg:grid-cols-2">
-        {/* Recent tasks */}
-        <Card className="p-4">
-          <div className="mb-3 flex items-center justify-between">
-            <h2 className="text-sm font-semibold">Recent tasks</h2>
-            <Link
-              href="/tasks"
-              className="inline-flex items-center gap-1 text-xs font-medium text-[var(--accent)] hover:underline"
-            >
-              View queue <ArrowUpRight className="h-3 w-3" />
-            </Link>
-          </div>
-          {!data || data.tasks.recent.length === 0 ? (
-            <Empty hint="No tasks have been submitted yet." />
-          ) : (
-            <ul className="space-y-2">
-              {data.tasks.recent.map((t) => (
-                <li
-                  key={t.id}
-                  className="flex items-start gap-3 rounded-md border border-[var(--border)]/60 px-3 py-2 text-xs"
-                >
-                  <TaskStatusIcon status={t.status} />
-                  <div className="min-w-0 flex-1">
-                    <div className="truncate font-medium text-[var(--foreground)]">{t.title}</div>
-                    <div className="mt-0.5 flex flex-wrap items-center gap-1.5 text-[var(--muted-foreground)]">
-                      <Badge className="font-mono">{t.assignedAgent ?? "auto"}</Badge>
-                      {t.intent && <Badge className="font-mono">{t.intent}</Badge>}
-                      <span>{timeAgo(t.createdAt)}</span>
-                      {t.latencyMs !== null && t.latencyMs > 0 ? (
-                        <span className="font-mono">· {formatLatency(t.latencyMs)}</span>
-                      ) : null}
-                    </div>
-                  </div>
-                </li>
-              ))}
-            </ul>
-          )}
-        </Card>
-
-        {/* Recent conversations */}
-        <Card className="p-4">
-          <div className="mb-3 flex items-center justify-between">
-            <h2 className="text-sm font-semibold">Recent chats</h2>
-            <Link
-              href="/chat"
-              className="inline-flex items-center gap-1 text-xs font-medium text-[var(--accent)] hover:underline"
-            >
-              Open chat <ArrowUpRight className="h-3 w-3" />
-            </Link>
-          </div>
-          {!data || data.conversations.total === 0 ? (
-            <Empty hint="No conversations yet — open Chat to start one." />
-          ) : (
-            <>
-              <div className="mb-3 grid grid-cols-3 gap-2 text-xs">
-                <SmallStat
-                  icon={<MessageSquare className="h-3.5 w-3.5" />}
-                  label="Threads"
-                  value={data.conversations.total}
-                />
-                <SmallStat
-                  icon={<Hash className="h-3.5 w-3.5" />}
-                  label="Messages"
-                  value={data.conversations.messages}
-                />
-                <SmallStat
-                  icon={<Clock className="h-3.5 w-3.5" />}
-                  label="Last activity"
-                  value={timeAgo(data.conversations.lastActivityAt)}
-                />
+          {/* ── Tasks + tokens over time ─────────────────────────── */}
+          <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+            <Card title="Tasks per day" subtitle="Last 14 days">
+              <SparkChart data={data.tasksByDay.map((p) => p.count)} color="#6366f1" />
+              <div className="mt-2 flex items-center justify-between text-[10px] text-[var(--muted-foreground)]">
+                <span>{data.tasksByDay[0]?.date}</span>
+                <span>{data.tasksByDay.at(-1)?.date}</span>
               </div>
-              <ul className="space-y-2">
-                {data.conversations.recent.map((c) => (
-                  <li
-                    key={c.id}
-                    className="flex items-center gap-3 rounded-md border border-[var(--border)]/60 px-3 py-2 text-xs"
-                  >
-                    <MessageSquare className="h-3.5 w-3.5 shrink-0 text-[var(--muted-foreground)]" />
+            </Card>
+
+            <Card title="Token usage" subtitle="Prompt + completion daily">
+              <StackedBarChart
+                data={data.tokenUsageByDay.map((d) => ({
+                  label: d.date.slice(5),
+                  a: d.promptTokens,
+                  b: d.completionTokens,
+                }))}
+                colorA="#6366f1"
+                colorB="#22c55e"
+              />
+            </Card>
+          </div>
+
+          {/* ── Per-agent breakdown + intents ────────────────────── */}
+          <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
+            <div className="lg:col-span-2">
+              <Card title="Agent performance" subtitle="Task volume & success rate">
+                <div className="overflow-x-auto">
+                  <table className="w-full text-xs">
+                    <thead>
+                      <tr className="border-b border-[var(--border)] text-left text-[var(--muted-foreground)]">
+                        <th className="py-2.5 pl-3 pr-2 font-medium">Agent</th>
+                        <th className="px-2 font-medium">Tasks</th>
+                        <th className="px-2 font-medium">Success</th>
+                        <th className="px-2 font-medium">Tokens</th>
+                        <th className="px-2 text-right font-medium">Avg latency</th>
+                        <th className="pr-3 pl-2 text-right font-medium">Last used</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {agents.map((a) => (
+                        <tr key={a.id} className="border-b border-[var(--border)]/60 last:border-0">
+                          <td className="py-2.5 pl-3 pr-2 font-medium text-foreground">{a.name}</td>
+                          <td className="px-2 tabular-nums">{a.taskCount}</td>
+                          <td className="px-2">
+                            <span
+                              className={cn(
+                                "rounded-full border px-1.5 py-0.5 text-[10px]",
+                                a.successRate >= 90
+                                  ? "border-emerald-500/30 text-emerald-500"
+                                  : a.successRate >= 60
+                                    ? "border-amber-500/30 text-amber-500"
+                                    : "border-red-500/30 text-red-500",
+                              )}
+                            >
+                              {a.successRate}%
+                            </span>
+                          </td>
+                          <td className="px-2 tabular-nums">{formatNumber(a.totalTokens)}</td>
+                          <td className="px-2 text-right tabular-nums">
+                            {a.avgLatencyMs ? `${formatNumber(a.avgLatencyMs)}ms` : "—"}
+                          </td>
+                          <td className="pr-3 pl-2 text-right text-[10px] text-[var(--muted-foreground)]">
+                            {a.lastUsedAt ? timeAgo(a.lastUsedAt) : "never"}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </Card>
+            </div>
+
+            <Card title="Intents" subtitle="Task classification breakdown">
+              <Donut
+                slices={data.intentDistribution.map((d) => ({
+                  label: d.intent,
+                  value: d.count,
+                  color: INTENT_COLORS[d.intent] ?? "#6366f1",
+                }))}
+              />
+              <div className="mt-3 space-y-1">
+                {data.intentDistribution.map((d) => (
+                  <div key={d.intent} className="flex items-center gap-2 text-xs">
+                    <span
+                      className="h-2.5 w-2.5 rounded-sm"
+                      style={{ backgroundColor: INTENT_COLORS[d.intent] ?? "#6366f1" }}
+                    />
+                    <span className="capitalize text-[var(--muted-foreground)]">{d.intent}</span>
+                    <span className="ml-auto tabular-nums">{d.count}</span>
+                  </div>
+                ))}
+              </div>
+            </Card>
+          </div>
+
+          {/* ── Status distribution ─────────────────────────────── */}
+          <Card title="Task status" subtitle="Queued / running / done / failed / cancelled">
+            <div className="flex flex-wrap gap-3">
+              {data.statusDistribution.map((s) => (
+                <div key={s.status} className="flex items-center gap-2 text-xs">
+                  <span
+                    className="h-2.5 w-2.5 rounded-full"
+                    style={{ backgroundColor: STATUS_COLORS[s.status] ?? "#a3a3a3" }}
+                  />
+                  <span className="capitalize text-[var(--muted-foreground)]">{s.status}</span>
+                  <span className="ml-1 tabular-nums text-foreground font-medium">{s.count}</span>
+                </div>
+              ))}
+              {data.statusDistribution.length === 0 && (
+                <div className="text-xs text-[var(--muted-foreground)]">No tasks yet.</div>
+              )}
+            </div>
+          </Card>
+
+          {/* ── Recent activity ─────────────────────────────────── */}
+          <Card title="Recent activity" subtitle="Latest 10 tasks">
+            <ul className="divide-y divide-[var(--border)]/60">
+              {recent.length === 0 ? (
+                <li className="py-6 text-center text-sm text-[var(--muted-foreground)]">
+                  No activity yet. Submit a task below to populate the log.
+                </li>
+              ) : (
+                recent.map((r) => (
+                  <li key={r.taskId} className="flex items-center gap-3 py-2.5">
+                    <span
+                      className="h-2 w-2 shrink-0 rounded-full"
+                      style={{ backgroundColor: STATUS_COLORS[r.status] ?? "#a3a3a3" }}
+                    />
                     <div className="min-w-0 flex-1">
-                      <div className="truncate font-medium text-[var(--foreground)]">{c.title}</div>
-                      <div className="mt-0.5 flex items-center gap-1.5 text-[var(--muted-foreground)]">
-                        <Badge className="font-mono">{c.agentId}</Badge>
-                        <span>{timeAgo(c.updatedAt)}</span>
+                      <div className="truncate text-xs font-medium">{r.title}</div>
+                      <div className="flex flex-wrap items-center gap-2 text-[10px] text-[var(--muted-foreground)]">
+                        <span className="font-medium text-foreground">{r.agentId}</span>
+                        {r.intent && <span className="capitalize">· {r.intent}</span>}
+                        <span>· {timeAgo(r.createdAt)}</span>
+                        {(r.promptTokens + r.completionTokens) > 0 && (
+                          <span>· {formatNumber(r.promptTokens + r.completionTokens)} tokens</span>
+                        )}
                       </div>
                     </div>
+                    <span
+                      className={cn(
+                        "rounded-full border px-1.5 py-0.5 text-[10px] capitalize",
+                        r.status === "done" && "border-emerald-500/30 text-emerald-500",
+                        r.status === "failed" && "border-red-500/30 text-red-500",
+                        r.status === "running" && "border-indigo-500/30 text-indigo-500",
+                        r.status === "queued" && "border-zinc-400/30 text-zinc-400",
+                        r.status === "cancelled" && "border-zinc-500/30 text-zinc-500",
+                      )}
+                    >
+                      {r.status}
+                    </span>
                   </li>
-                ))}
-              </ul>
-            </>
-          )}
-        </Card>
-      </div>
-
-      {/* Footer note: data freshness */}
-      {data ? (
-        <p className="mt-6 text-center text-[11px] text-[var(--muted-foreground)]">
-          Computed at {new Date(data.generatedAt).toLocaleTimeString()} · last updated{" "}
-          {timeAgo(new Date(dataUpdatedAt).toISOString())}
-        </p>
-      ) : null}
+                ))
+              )}
+            </ul>
+            <Link
+              href="/tasks"
+              className="mt-3 inline-flex items-center gap-1 text-xs text-[var(--accent)] hover:underline"
+            >
+              View all tasks <ArrowUpRight className="h-3 w-3" />
+            </Link>
+          </Card>
+        </div>
+      )}
     </div>
   );
 }
 
-function KpiTile({
-  label,
-  value,
-  hint,
-  icon,
-}: {
-  label: string;
-  value: React.ReactNode;
-  hint?: string;
-  icon?: React.ReactNode;
-}) {
+/* ── Building blocks ─────────────────────────────────────────── */
+
+function Kpi({ label, value, icon }: { label: string; value: string | number; icon: React.ReactNode }) {
   return (
-    <div className="rounded-xl border border-[var(--border)] bg-[var(--card)] p-4">
+    <div className="rounded-xl border border-[var(--border)] bg-[var(--card)] p-3">
       <div className="flex items-center justify-between">
         <span className="text-xs text-[var(--muted-foreground)]">{label}</span>
         {icon}
       </div>
-      <div className="mt-1 text-2xl font-bold tabular-nums text-[var(--foreground)]">{value}</div>
-      {hint ? (
-        <div className="mt-0.5 text-[11px] text-[var(--muted-foreground)]">{hint}</div>
-      ) : null}
+      <div className="mt-1 text-2xl font-bold tabular-nums">{value}</div>
     </div>
   );
 }
 
-function SmallStat({
-  icon,
-  label,
-  value,
+function Card({
+  title,
+  subtitle,
+  children,
 }: {
-  icon: React.ReactNode;
-  label: string;
-  value: React.ReactNode;
+  title: string;
+  subtitle?: string;
+  children: React.ReactNode;
 }) {
   return (
-    <div className="rounded-md border border-[var(--border)]/60 px-2 py-1.5">
-      <div className="flex items-center gap-1 text-[10px] uppercase text-[var(--muted-foreground)]">
-        {icon}
-        {label}
+    <div className="rounded-xl border border-[var(--border)] bg-[var(--card)] p-4">
+      <div className="mb-3 flex items-center justify-between">
+        <h3 className="text-sm font-semibold">{title}</h3>
+        {subtitle && <span className="text-[10px] text-[var(--muted-foreground)]">{subtitle}</span>}
       </div>
-      <div className="mt-0.5 font-mono tabular-nums">{value}</div>
+      {children}
     </div>
   );
 }
 
-function TaskStatusIcon({ status }: { status: string }) {
-  const cls = "mt-0.5 h-4 w-4 shrink-0";
-  if (status === "done") return <CheckCircle2 className={cn(cls, "text-[var(--status-online)]")} />;
-  if (status === "failed") return <XCircle className={cn(cls, "text-[var(--status-offline)]")} />;
-  if (status === "cancelled")
-    return <XCircle className={cn(cls, "text-[var(--muted-foreground)]")} />;
-  if (status === "running")
+/** Lightweight line-style spark chart (no Recharts dependency). */
+function SparkChart({ data, color }: { data: number[]; color: string }) {
+  if (data.length === 0) return null;
+  const max = Math.max(...data, 1);
+  const w = 100;
+  const h = 40;
+  const stepX = data.length > 1 ? w / (data.length - 1) : 0;
+
+  const pts = data.map((v, i) => `${i * stepX},${h - (v / max) * h}`).join(" ");
+
+  return (
+    <div className="space-y-1">
+      <svg viewBox={`0 0 ${w} ${h}`} className="h-20 w-full" preserveAspectRatio="none">
+        <polyline
+          points={`0,${h} ${pts} ${w},${h}`}
+          fill={color}
+          fillOpacity="0.12"
+          stroke="none"
+        />
+        <polyline points={pts} fill="none" stroke={color} strokeWidth="1.5" />
+        {data.map((v, i) =>
+          v > 0 ? (
+            <circle
+              key={i}
+              cx={i * stepX}
+              cy={h - (v / max) * h}
+              r="1.5"
+              fill={color}
+            />
+          ) : null,
+        )}
+      </svg>
+      <div className="flex h-4 items-end justify-between gap-1">
+        {data.map((v, i) => (
+          <div
+            key={i}
+            className="flex-1 rounded-sm"
+            style={{ height: `${(v / max) * 100}%`, minHeight: v > 0 ? "2px" : "1px", backgroundColor: `${color}40` }}
+            title={`${v} tasks`}
+          />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/** Lightweight stacked bar chart. */
+function StackedBarChart({
+  data,
+  colorA,
+  colorB,
+}: {
+  data: Array<{ label: string; a: number; b: number }>;
+  colorA: string;
+  colorB: string;
+}) {
+  if (data.length === 0) return null;
+  const max = Math.max(...data.map((d) => d.a + d.b), 1);
+
+  return (
+    <div className="flex h-32 items-end gap-1">
+      {data.map((d, i) => {
+        const total = d.a + d.b;
+        const ratio = (total / max) * 100;
+        return (
+          <div key={i} className="group relative flex h-full flex-1 flex-col justify-end rounded-sm overflow-hidden">
+            <div
+              className="w-full"
+              style={{ height: `${ratio}%`, backgroundColor: `${colorA}`, minHeight: total > 0 ? "2px" : "1px" }}
+              title={`${d.label}: ${d.a} prompt + ${d.b} completion tokens`}
+            />
+            <div className="absolute inset-0 flex items-end">
+              <div
+                className="w-full"
+                style={{ height: `${(d.a / Math.max(total, 1)) * 100}%`, backgroundColor: `${colorB}` }}
+              />
+            </div>
+            <span className="absolute -bottom-5 left-1/2 -translate-x-1/2 text-[8px] text-[var(--muted-foreground)]">
+              {d.label}
+            </span>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+/** Donut chart via SVG. */
+function Donut({ slices }: { slices: Array<{ label: string; value: number; color: string }> }) {
+  const total = slices.reduce((acc, s) => acc + s.value, 0);
+  if (total === 0) {
     return (
-      <RefreshCcw className={cn(cls, "animate-spin text-[var(--accent)]")} />
+      <div className="flex h-32 items-center justify-center text-xs text-[var(--muted-foreground)]">
+        No intents classified yet.
+      </div>
     );
-  return <Clock className={cn(cls, "text-[var(--status-unknown)]")} />;
-}
+  }
 
-function Skeleton({ rows }: { rows: number }) {
+  const r = 24;
+  const cx = 36;
+  const cy = 36;
+  const C = 2 * Math.PI * r;
+
+  let offset = 0;
   return (
-    <div className="space-y-2">
-      {[...Array(rows)].map((_, i) => (
-        <div key={i} className="h-3 animate-pulse rounded bg-[var(--muted)]" />
-      ))}
-    </div>
+    <svg viewBox="0 0 72 72" className="h-32 w-full">
+      <circle cx={cx} cy={cy} r={r} fill="none" stroke="var(--border)" strokeWidth="10" />
+      {slices.map((s, i) => {
+        const len = (s.value / total) * C;
+        const segment = (
+          <circle
+            key={i}
+            cx={cx}
+            cy={cy}
+            r={r}
+            fill="none"
+            stroke={s.color}
+            strokeWidth="10"
+            strokeDasharray={`${len} ${C - len}`}
+            strokeDashoffset={-offset}
+            transform={`rotate(-90 ${cx} ${cy})`}
+          />
+        );
+        offset += len;
+        return segment;
+      })}
+      <text x={cx} y={cy - 2} textAnchor="middle" className="fill-foreground text-sm font-bold">
+        {total}
+      </text>
+      <text x={cx} y={cy + 8} textAnchor="middle" className="fill-muted-foreground text-[8px]">
+        total
+      </text>
+    </svg>
   );
 }
 
-function Empty({ hint }: { hint?: string }) {
+function Skeleton() {
   return (
-    <div className="rounded-md border border-dashed border-[var(--border)] px-3 py-6 text-center text-xs text-[var(--muted-foreground)]">
-      {hint ?? "Nothing here yet."}
+    <div className="space-y-4">
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-5">
+        {Array.from({ length: 5 }).map((_, i) => (
+          <div key={i} className="h-20 animate-pulse rounded-xl bg-[var(--card)]" />
+        ))}
+      </div>
+      <div className="h-40 animate-pulse rounded-xl bg-[var(--card)]" />
+      <div className="h-32 animate-pulse rounded-xl bg-[var(--card)]" />
     </div>
   );
-}
-
-function average(values: (number | null | undefined)[]): number | null {
-  const nums = values.filter((v): v is number => typeof v === "number");
-  if (nums.length === 0) return null;
-  return nums.reduce((acc, n) => acc + n, 0) / nums.length;
-}
-
-/** Compact "1.2k", "3.4m" rendering for big numerics like tokens. */
-function formatTokens(n: number | undefined): string {
-  if (!n || n <= 0) return "0";
-  if (n < 1_000) return String(n);
-  if (n < 1_000_000) return `${(n / 1_000).toFixed(1)}k`;
-  if (n < 1_000_000_000) return `${(n / 1_000_000).toFixed(1)}m`;
-  return `${(n / 1_000_000_000).toFixed(1)}b`;
 }
