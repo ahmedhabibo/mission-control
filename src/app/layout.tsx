@@ -3,7 +3,7 @@ import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
 import { Providers } from "@/components/providers";
 import Link from "next/link";
-import { LineChart, Settings, MessageSquare, ListChecks, Activity } from "lucide-react";
+import { LineChart, Settings, MessageSquare, ListChecks, Activity, Box } from "lucide-react";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -52,6 +52,13 @@ export default function RootLayout({
                 >
                   <LineChart className="h-3.5 w-3.5" />
                   Dashboard
+                </Link>
+                <Link
+                  href="/arena"
+                  className="flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm text-[var(--muted-foreground)] transition-colors hover:bg-[var(--muted)] hover:text-[var(--foreground)]"
+                >
+                  <Box className="h-3.5 w-3.5" />
+                  Arena
                 </Link>
                 <Link
                   href="/status"
