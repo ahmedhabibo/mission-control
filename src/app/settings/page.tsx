@@ -1,299 +1,396 @@
 "use client";
 
-import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { Button } from "@/components/ui/button";
-import { Card } from "@/components/ui/card";
+import {
+  ArrowLeft,
+  Save,
+  Plus,
+  Trash2,
+  RotateCcw,
+  ChevronUp,
+  ChevronDown,
+  PlugZap,
+  Cog,
+} from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
-import { Check, ArrowLeft, Plug, PlugZap } from "lucide-react";
 
-type ToolSetting = {
-  id: string;
+/* ── Types ────────────────────────────────────────────────────────── */
+
+interface AgentSetting {
+  agentId: string;
   name: string;
-  description: string;
-  category: string;
-  deployment: string;
+  kind: "chat" | "profile" | "cli" | "gateway" | "mcp";
   enabled: boolean;
-  requiredEnv: string[];
-  hasEndpointOverride: boolean;
-  endpointOverride: string | null;
-};
+  customLabel?: string | null;
+  defaultModel?: string | null;
+  sortOrder: number;
+  notes?: string | null;
+  available: boolean;
+  description: string;
+}
 
+interface ConfigRow {
+  key: string;
+  value: string;
+  isSecret: boolean;
+  description?: string;
+}
+
+const ENV_FIELDS: ConfigRow[] = [
+  {
+    key: "MC_GATEWAY_URL",
+    value: "",
+    isSecret: false,
+    description: "URL of the Mission Control gateway (http://localhost:8788)",
+  },
+  {
+    key: "MC_GATEWAY_TOKEN",
+    value: "",
+    isSecret: true,
+    description: "Bearer token for the gateway (40-90 day rotation)",
+  },
+  {
+    key: "NIM_API_KEY",
+    value: "",
+    isSecret: true,
+    description: "NVIDIA NIM free-tier key (https://build.nvidia.com)",
+  },
+  {
+    key: "MISTRAL_API_KEY",
+    value: "",
+    isSecret: true,
+    description: "Mistral AI free-tier key (https://console.mistral.ai/api-keys)",
+  },
+  {
+    key: "OPENROUTER_API_KEY",
+    value: "",
+    isSecret: true,
+    description: "Optional — OpenRouter aggregator key",
+  },
+];
+
+/**
+ * Settings page — three sections:
+ *   1. **Provider credentials** — the env vars the chat adapters read.
+ *   2. **Agent roster** — per-agent enable/disable, reorder, model, label.
+ *   3. **Restore defaults** — clear all persisted config.
+ *
+ * Env vars are NEVER stored server-side; the page writes them to .env.local
+ * via `/api/settings/env` which shells out to a Node script. Secrets are
+ * masked in the UI.
+ */
 export default function SettingsPage() {
-  const qc = useQueryClient();
-  const { data, isLoading } = useQuery<{ tools: ToolSetting[] }>({
-    queryKey: ["settings"],
-    queryFn: () => fetch("/api/settings").then((r) => r.json()),
-  });
+  const [agents, setAgents] = useState<AgentSetting[]>([]);
+  const [envValues, setEnvValues] = useState<Record<string, string>>({});
+  const [envExists, setEnvExists] = useState<Record<string, boolean>>({});
+  const [envDirty, setEnvDirty] = useState<Record<string, boolean>>({});
+  const [activeTab, setActiveTab] = useState<"env" | "agents" | "advanced">("env");
+  const [savedToast, setSavedToast] = useState<string | null>(null);
 
-  const mutate = useMutation({
-    mutationFn: (body: { toolId: string; enabled?: boolean; endpointOverride?: string | null }) =>
-      fetch("/api/settings", {
+  /* ── Load ──────────────────────────────────────────────────────── */
+  useEffect(() => {
+    fetch("/api/agent-settings", { cache: "no-store" })
+      .then((r) => r.json())
+      .then((d) => setAgents(d.settings ?? []));
+
+    fetch("/api/settings/env", { cache: "no-store" })
+      .then((r) => r.json())
+      .then((d) => {
+        const initial: Record<string, string> = {};
+        const exists: Record<string, boolean> = {};
+        for (const field of d.values ?? []) {
+          initial[field.key] = field.value ?? "";
+          exists[field.key] = field.set ?? false;
+        }
+        setEnvValues(initial);
+        setEnvExists(exists);
+      });
+  }, []);
+
+  /* ── Persist one env var ────────────────────────────────────────── */
+  async function persistKey(key: string) {
+    const v = envValues[key]?.trim();
+    if (!v) return;
+    try {
+      await fetch("/api/settings/env", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      }).then((r) => r.json()),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["settings"] }),
-  });
+        body: JSON.stringify({ key, value: v }),
+      });
+      setEnvExists((p) => ({ ...p, [key]: true }));
+      setEnvDirty((p) => ({ ...p, [key]: false }));
+      setSavedToast(`${key} saved`);
+      setTimeout(() => setSavedToast(null), 2000);
+    } catch {
+      setSavedToast(`Failed to save ${key}`);
+    }
+  }
+
+  /* ── Persist agent config ────────────────────────────────────────── */
+  async function persistAgent(id: string, patch: Partial<AgentSetting>) {
+    setAgents((prev) => prev.map((a) => (a.agentId === id ? { ...a, ...patch } : a)));
+    try {
+      await fetch("/api/agent-settings", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ agentId: id, ...patch }),
+      });
+    } catch {
+      /* optimistic */
+    }
+  }
+
+  async function moveAgent(id: string, dir: "up" | "down") {
+    const next = [...agents];
+    const idx = next.findIndex((a) => a.agentId === id);
+    if (idx < 0) return;
+    const swap = dir === "up" ? idx - 1 : idx + 1;
+    if (swap < 0 || swap >= next.length) return;
+    [next[idx], next[swap]] = [next[swap], next[idx]];
+    setAgents(next);
+    await fetch("/api/agent-settings", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ agentIds: next.map((a) => a.agentId) }),
+    });
+  }
+
+  async function resetAgent(id: string) {
+    setAgents((prev) => prev.map((a) => (a.agentId === id ? { ...a, enabled: true, customLabel: null, defaultModel: null, notes: null } : a)));
+    await fetch(`/api/agent-settings?agentId=${encodeURIComponent(id)}`, { method: "DELETE" });
+  }
 
   return (
-    <div className="mx-auto max-w-4xl px-6 py-8">
+    <div className="mx-auto max-w-5xl px-6 py-8">
       <Link
-        href="/"
+        href="/status"
         className="mb-4 inline-flex items-center gap-1.5 text-sm text-[var(--muted-foreground)] hover:text-[var(--foreground)]"
       >
-        <ArrowLeft className="h-3.5 w-3.5" />
-        Back to status board
+        <ArrowLeft className="h-3.5 w-3.5" /> Back to status board
       </Link>
 
       <h1 className="text-2xl font-bold tracking-tight">Settings</h1>
       <p className="mt-1 text-sm text-[var(--muted-foreground)]">
-        Enable tools and configure endpoints. All credentials live behind
-        a single Mission Control gateway — set{" "}
-        <code className="rounded bg-[var(--muted)] px-1 py-0.5 font-mono text-xs">
-          MC_GATEWAY_URL
-        </code>{" "}
-        and{" "}
-        <code className="rounded bg-[var(--muted)] px-1 py-0.5 font-mono text-xs">
-          MC_GATEWAY_TOKEN
-        </code>{" "}
-        once. Provider keys (NIM, Mistral, etc.) belong inside the gateway,
-        never in this database.
+        Configure provider credentials and your agent roster. Changes persist to{" "}
+        <code className="rounded bg-[var(--muted)] px-1 py-0.5 font-mono text-xs">.env.local</code>{" "}
+        and the <code className="rounded bg-[var(--muted)] px-1 py-0.5 font-mono text-xs">agent_settings</code> SQLite table.
       </p>
 
-      <GatewayStatusBanner />
-
-      <EnvHint />
-
-      <div className="mt-6 space-y-3">
-        {isLoading ? (
-          <div className="text-sm text-[var(--muted-foreground)]">Loading…</div>
-        ) : (
-          data?.tools.map((tool) => (
-            <ToolSettingRow
-              key={tool.id}
-              tool={tool}
-              saving={mutate.isPending}
-              onToggle={(enabled) => mutate.mutate({ toolId: tool.id, enabled })}
-              onEndpoint={(endpointOverride) =>
-                mutate.mutate({ toolId: tool.id, endpointOverride })
-              }
-            />
-          ))
-        )}
-      </div>
-    </div>
-  );
-}
-
-function ToolSettingRow({
-  tool,
-  saving,
-  onToggle,
-  onEndpoint,
-}: {
-  tool: ToolSetting;
-  saving: boolean;
-  onToggle: (enabled: boolean) => void;
-  onEndpoint: (value: string | null) => void;
-}) {
-  const [editing, setEditing] = useState(false);
-  const [draft, setDraft] = useState(tool.endpointOverride ?? "");
-
-  useEffect(() => {
-    setDraft(tool.endpointOverride ?? "");
-  }, [tool.endpointOverride]);
-
-  return (
-    <Card className="p-4">
-      <div className="flex items-start justify-between gap-4">
-        <div className="min-w-0">
-          <div className="flex flex-wrap items-center gap-2">
-            <h3 className="font-semibold">{tool.name}</h3>
-            <Badge className="capitalize text-[var(--muted-foreground)]">{tool.category}</Badge>
-            <Badge className="capitalize text-[var(--muted-foreground)]">{tool.deployment}</Badge>
-          </div>
-          <p className="mt-0.5 text-xs text-[var(--muted-foreground)]">{tool.description}</p>
-          {tool.requiredEnv.length > 0 && (
-            <div className="mt-2 flex flex-wrap items-center gap-1.5">
-              <span className="text-xs text-[var(--muted-foreground)]">env:</span>
-              {tool.requiredEnv.map((env) => {
-                const set = Boolean(process.env[env]); // client can't see env; show as config hint only
-                return (
-                  <code
-                    key={env}
-                    className="rounded border border-[var(--border)] bg-[var(--muted)] px-1.5 py-0.5 font-mono text-[var(--muted-foreground)] text-xs"
-                    title="Set this in .env.local"
-                  >
-                    {env}
-                  </code>
-                );
-              })}
-            </div>
-          )}
-        </div>
-
-        {/* Toggle */}
-        <button
-          role="switch"
-          aria-checked={tool.enabled}
-          disabled={saving}
-          onClick={() => onToggle(!tool.enabled)}
-          className={cn(
-            "relative h-6 w-11 shrink-0 rounded-full border transition-colors",
-            tool.enabled
-              ? "border-[var(--status-online)] bg-[var(--status-online)]/30"
-              : "border-[var(--border)] bg-[var(--muted)]",
-          )}
-        >
-          <span
+      {/* Tabs */}
+      <div className="mt-6 flex border-b border-[var(--border)]">
+        {[
+          { id: "env" as const, label: "Providers", icon: <PlugZap className="h-3.5 w-3.5" /> },
+          { id: "agents" as const, label: "Agent roster", icon: <Cog className="h-3.5 w-3.5" /> },
+          { id: "advanced" as const, label: "Advanced", icon: <RotateCcw className="h-3.5 w-3.5" /> },
+        ].map((tab) => (
+          <button
+            key={tab.id}
+            onClick={() => setActiveTab(tab.id)}
             className={cn(
-              "absolute top-0.5 h-4 w-4 rounded-full bg-[var(--foreground)] transition-transform",
-              tool.enabled ? "translate-x-5" : "translate-x-0.5",
+              "flex items-center gap-1.5 border-b-2 px-4 py-2 text-sm",
+              activeTab === tab.id
+                ? "border-[var(--accent)] text-[var(--foreground)]"
+                : "border-transparent text-[var(--muted-foreground)] hover:text-[var(--foreground)]",
             )}
-          />
-        </button>
+          >
+            {tab.icon} {tab.label}
+          </button>
+        ))}
       </div>
 
-      {/* Endpoint override editor (for tools that take a base URL/container). */}
-      {tool.deployment !== "local" || tool.requiredEnv.length > 0 ? (
-        <div className="mt-3 border-t border-[var(--border)] pt-3">
-          {editing ? (
-            <div className="flex gap-2">
-              <input
-                value={draft}
-                onChange={(e) => setDraft(e.target.value)}
-                placeholder="https://…  or  container-name  (leave blank for default)"
-                className="h-8 flex-1 rounded-md border border-[var(--border)] bg-[var(--input)] px-2 font-mono text-xs"
-              />
-              <Button
-                size="sm"
-                variant="primary"
-                onClick={() => {
-                  onEndpoint(draft.trim() || null);
-                  setEditing(false);
-                }}
-              >
-                <Check className="h-3.5 w-3.5" />
-                Save
-              </Button>
-              <Button size="sm" variant="ghost" onClick={() => setEditing(false)}>
-                Cancel
-              </Button>
+      {/* Toast */}
+      {savedToast && (
+        <div className="mb-4 mt-4 rounded-md border border-emerald-500/30 bg-emerald-500/10 px-3 py-1.5 text-xs text-emerald-500">
+          {savedToast}
+        </div>
+      )}
+
+      {activeTab === "env" && (
+        <div className="mt-6 space-y-4">
+          <p className="text-sm text-[var(--muted-foreground)]">
+            Set provider API keys. Each key unlocks the matching chat adapter in Mission Control.
+            Keys are written to <code className="rounded bg-[var(--muted)] px-1 font-mono text-xs">.env.local</code>
+            (not the database). Empty fields are skipped when you click Save.
+          </p>
+          {ENV_FIELDS.map((field) => {
+            const isSet = envExists[field.key];
+            const hasDirty = envDirty[field.key];
+            return (
+              <div key={field.key} className="rounded-xl border border-[var(--border)] bg-[var(--card)] p-4">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <label className="block">
+                    <code className="text-sm font-semibold">{field.key}</code>
+                    <p className="mt-1 text-xs text-[var(--muted-foreground)]">{field.description}</p>
+                  </label>
+                  <Badge className={isSet ? "border-emerald-500/30 text-emerald-500" : "border-zinc-500/30 text-zinc-400"}>
+                    {isSet ? "Set" : "Not set"}
+                  </Badge>
+                </div>
+                <div className="mt-3 flex gap-2">
+                  <input
+                    type={field.isSecret ? "password" : "text"}
+                    value={envValues[field.key] ?? ""}
+                    onChange={(e) => {
+                      setEnvValues((p) => ({ ...p, [field.key]: e.target.value }));
+                      setEnvDirty((p) => ({ ...p, [field.key]: true }));
+                    }}
+                    placeholder={isSet ? "•••• (already set; paste new value to overwrite)" : "paste value here"}
+                    className="flex-1 rounded-md border border-[var(--border)] bg-[var(--input)] px-3 py-1.5 font-mono text-sm focus:border-[var(--ring)] focus:outline-none"
+                  />
+                  <button
+                    onClick={() => persistKey(field.key)}
+                    disabled={!hasDirty || !envValues[field.key]}
+                    className="inline-flex items-center gap-1.5 rounded-md border border-[var(--accent)] bg-[var(--accent)]/10 px-3 py-1.5 text-xs font-medium hover:bg-[var(--accent)]/20 disabled:opacity-30"
+                  >
+                    <Save className="h-3 w-3" /> Save
+                  </button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {activeTab === "agents" && (
+        <div className="mt-6 space-y-3">
+          <p className="text-sm text-[var(--muted-foreground)]">
+            Disable agents you don't use, reorder them, or set a custom label / default model.
+            Changes apply immediately (the chat picker respects these).
+          </p>
+          {agents.map((a, idx) => (
+            <div
+              key={a.agentId}
+              className={cn(
+                "rounded-xl border bg-[var(--card)] p-4",
+                a.enabled ? "border-[var(--border)]" : "border-dashed border-zinc-700 opacity-70",
+              )}
+            >
+              <div className="flex flex-wrap items-start gap-3">
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-2">
+                    <code className="text-sm font-semibold">{a.agentId}</code>
+                    <Badge className="text-[var(--muted-foreground)]">{a.kind}</Badge>
+                    {!a.available && (
+                      <Badge className="border-zinc-500/30 text-zinc-400">unavailable</Badge>
+                    )}
+                  </div>
+                  <div className="mt-2 grid gap-2 sm:grid-cols-3">
+                    <label className="block">
+                      <span className="text-[10px] uppercase tracking-wide text-[var(--muted-foreground)]">Custom label</span>
+                      <input
+                        value={a.customLabel ?? ""}
+                        onChange={(e) => setAgents((prev) =>
+                          prev.map((x) => (x.agentId === a.agentId ? { ...x, customLabel: e.target.value } : x)),
+                        )}
+                        onBlur={(e) => persistAgent(a.agentId, { customLabel: e.target.value || null })}
+                        placeholder={a.name}
+                        className="mt-1 w-full rounded-md border border-[var(--border)] bg-[var(--input)] px-2 py-1 text-xs focus:border-[var(--ring)] focus:outline-none"
+                      />
+                    </label>
+                    <label className="block">
+                      <span className="text-[10px] uppercase tracking-wide text-[var(--muted-foreground)]">Default model</span>
+                      <input
+                        value={a.defaultModel ?? ""}
+                        onChange={(e) => setAgents((prev) =>
+                          prev.map((x) => (x.agentId === a.agentId ? { ...x, defaultModel: e.target.value } : x)),
+                        )}
+                        onBlur={(e) => persistAgent(a.agentId, { defaultModel: e.target.value || null })}
+                        placeholder={a.defaultModel ?? "provider/model"}
+                        className="mt-1 w-full rounded-md border border-[var(--border)] bg-[var(--input)] px-2 py-1 font-mono text-xs focus:border-[var(--ring)] focus:outline-none"
+                      />
+                    </label>
+                    <label className="block sm:col-span-1">
+                      <span className="text-[10px] uppercase tracking-wide text-[var(--muted-foreground)]">Notes</span>
+                      <input
+                        value={a.notes ?? ""}
+                        onChange={(e) => setAgents((prev) =>
+                          prev.map((x) => (x.agentId === a.agentId ? { ...x, notes: e.target.value } : x)),
+                        )}
+                        onBlur={(e) => persistAgent(a.agentId, { notes: e.target.value || null })}
+                        placeholder="free-text"
+                        className="mt-1 w-full rounded-md border border-[var(--border)] bg-[var(--input)] px-2 py-1 text-xs focus:border-[var(--ring)] focus:outline-none"
+                      />
+                    </label>
+                  </div>
+                </div>
+                <div className="flex shrink-0 items-center gap-1">
+                  <button
+                    onClick={() => moveAgent(a.agentId, "up")}
+                    disabled={idx === 0}
+                    className="rounded p-1 text-[var(--muted-foreground)] hover:bg-[var(--muted)] disabled:opacity-30"
+                    title="Move up"
+                  >
+                    <ChevronUp className="h-3.5 w-3.5" />
+                  </button>
+                  <button
+                    onClick={() => moveAgent(a.agentId, "down")}
+                    disabled={idx === agents.length - 1}
+                    className="rounded p-1 text-[var(--muted-foreground)] hover:bg-[var(--muted)] disabled:opacity-30"
+                    title="Move down"
+                  >
+                    <ChevronDown className="h-3.5 w-3.5" />
+                  </button>
+                  <button
+                    onClick={() => persistAgent(a.agentId, { enabled: !a.enabled })}
+                    className={cn(
+                      "rounded px-2 py-1 text-xs",
+                      a.enabled
+                        ? "border border-emerald-500/40 text-emerald-500"
+                        : "border border-zinc-500/40 text-zinc-400",
+                    )}
+                  >
+                    {a.enabled ? "Enabled" : "Disabled"}
+                  </button>
+                  <button
+                    onClick={() => resetAgent(a.agentId)}
+                    className="rounded p-1 text-[var(--muted-foreground)] hover:bg-[var(--muted)] hover:text-red-500"
+                    title="Reset to default"
+                  >
+                    <Trash2 className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+              </div>
             </div>
-          ) : (
-            <div className="flex items-center justify-between text-xs">
-              <span className="text-[var(--muted-foreground)]">
-                {tool.endpointOverride ? (
-                  <>
-                    endpoint:{" "}
-                    <code className="font-mono text-[var(--foreground)]">
-                      {tool.endpointOverride}
-                    </code>
-                  </>
-                ) : (
-                  "endpoint: registry default"
-                )}
-              </span>
+          ))}
+        </div>
+      )}
+
+      {activeTab === "advanced" && (
+        <div className="mt-6 space-y-4">
+          <div className="rounded-xl border border-amber-500/30 bg-amber-500/5 p-4">
+            <h3 className="text-sm font-semibold">Danger zone</h3>
+            <p className="mt-1 text-xs text-[var(--muted-foreground)]">
+              These actions affect persistent config. They are not reversible from this UI.
+            </p>
+            <div className="mt-3 flex flex-wrap gap-2">
               <button
-                className="font-medium text-[var(--accent)] hover:underline"
-                onClick={() => setEditing(true)}
+                onClick={async () => {
+                  if (!confirm("Reset every agent's custom config to defaults?")) return;
+                  for (const a of agents) {
+                    await fetch(`/api/agent-settings?agentId=${encodeURIComponent(a.agentId)}`, { method: "DELETE" });
+                  }
+                  location.reload();
+                }}
+                className="inline-flex items-center gap-1.5 rounded-md border border-red-500/40 bg-red-500/5 px-3 py-1.5 text-xs font-medium text-red-500 hover:bg-red-500/15"
               >
-                {tool.endpointOverride ? "Edit" : "Override"}
+                <RotateCcw className="h-3.5 w-3.5" /> Reset all agent settings
               </button>
             </div>
-          )}
-        </div>
-      ) : null}
-    </Card>
-  );
-}
-
-function EnvHint() {
-  return (
-    <div className="mt-4 rounded-lg border border-[var(--border)] bg-[var(--muted)] p-3 text-xs text-[var(--muted-foreground)]">
-      <p>
-        <span className="font-semibold text-[var(--foreground)]">Tip:</span> Copy{" "}
-        <code className="rounded bg-[var(--card)] px-1 py-0.5 font-mono">.env.example</code>{" "}
-        to{" "}
-        <code className="rounded bg-[var(--card)] px-1 py-0.5 font-mono">.env.local</code>{" "}
-        and fill in your gateway credentials. Tools with missing config show
-        as{" "}
-        <span className="text-[var(--status-unknown)]">needs setup</span>, not
-        broken.
-      </p>
-    </div>
-  );
-}
-
-/** Banner that shows whether the gateway is reachable, with agent list. */
-function GatewayStatusBanner() {
-  const { data, isLoading } = useQuery<{
-    configured: boolean;
-    agents: { id: string; name?: string; available: boolean }[];
-    detail: string;
-    checkedAt: string;
-  }>({
-    queryKey: ["gateway-status"],
-    queryFn: () => fetch("/api/gateway/status").then((r) => r.json()),
-    refetchInterval: 15_000,
-  });
-
-  if (isLoading) {
-    return (
-      <div className="mt-4 rounded-lg border border-[var(--border)] bg-[var(--muted)] p-3 text-xs text-[var(--muted-foreground)]">
-        Checking gateway…
-      </div>
-    );
-  }
-
-  const configured = data?.configured ?? false;
-  const tone = configured ? "ok" : "warn";
-
-  return (
-    <div
-      className={cn(
-        "mt-4 flex items-start gap-3 rounded-lg border p-3 text-xs",
-        tone === "ok"
-          ? "border-[var(--status-online)]/40 bg-[var(--status-online)]/5"
-          : "border-[var(--status-unknown)]/40 bg-[var(--status-unknown)]/5",
-      )}
-    >
-      {tone === "ok" ? (
-        <PlugZap className="mt-0.5 h-4 w-4 text-[var(--status-online)]" />
-      ) : (
-        <Plug className="mt-0.5 h-4 w-4 text-[var(--status-unknown)]" />
-      )}
-      <div className="flex-1">
-        <div className="font-semibold text-[var(--foreground)]">
-          Gateway: {configured ? "online" : "not configured"}
-        </div>
-        <div className="mt-0.5 text-[var(--muted-foreground)]">{data?.detail}</div>
-        {configured && data?.agents.length ? (
-          <div className="mt-2 flex flex-wrap gap-1.5">
-            {data.agents.slice(0, 12).map((a) => (
-              <Badge
-                key={a.id}
-                className={cn(
-                  "font-mono text-[10px]",
-                  a.available
-                    ? "text-[var(--status-online)]"
-                    : "text-[var(--muted-foreground)]",
-                )}
-              >
-                {a.id}
-              </Badge>
-            ))}
-            {data.agents.length > 12 && (
-              <span className="text-[var(--muted-foreground)]">
-                +{data.agents.length - 12} more
-              </span>
-            )}
           </div>
-        ) : null}
-      </div>
+          <div className="rounded-xl border border-[var(--border)] bg-[var(--card)] p-4">
+            <h3 className="text-sm font-semibold">About these settings</h3>
+            <ul className="mt-2 space-y-1 text-xs text-[var(--muted-foreground)]">
+              <li>• Agent enable/disable + sort order persist to <code className="font-mono">agent_settings</code></li>
+              <li>• Provider API keys persist to <code className="font-mono">.env.local</code></li>
+              <li>• Chat agents: Hermes, NIM, Mistral Direct (can chat)</li>
+              <li>• CLI agents: kilo, grok, opencode, claude, codex, lm-studio (run tasks)</li>
+              <li>• Hermes config.yaml is read-only here; edit it on disk for model defaults.</li>
+            </ul>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
