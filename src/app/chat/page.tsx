@@ -28,6 +28,11 @@ import {
   ListChecks,
   RefreshCw,
   Eye,
+  Copy,
+  Check,
+  ArrowDownFromLine,
+  Wand2,
+  StopCircle,
 } from "lucide-react";
 
 /* ── Types (mirror API shapes) ──────────────────────────────────── */
@@ -87,10 +92,17 @@ export default function ChatPage() {
   const [showThinking, setShowThinking] = useState(true);
   // Tracks the in-flight retry per message id (so multiple messages can retry
   // concurrently and we can show a spinner on just the right one).
-  const [retryingId, setRetryingId] = useState<number | null>(null);
+  const [retlyingId, setRetlyingId] = useState<number | null>(null);
+  // Per-message copy-to-clipboard feedback ("Copied!" for ~1.5s).
+  const [copiedId, setCopiedId] = useState<number | null>(null);
+  // Auto-scroll lock — when false, new messages don't push the viewport
+  // down (so the user can scroll back to read without being yanked).
+  const [autoScroll, setAutoScroll] = useState(true);
   // Live model list from /api/chat/models (fetched once on mount, refreshed
   // every 5 min by the API route cache). Merged into groupedPickerOptions.
   const [liveModels, setLiveModels] = useState<Array<{ id: string; provider: string; friendlyName?: string }>>([]);
+  // Dynamic model groups from the API (replaces hardcoded MODEL_CATALOG).
+  const [modelGroups, setModelGroups] = useState<Array<{ provider: string; label: string; options: Array<{ label: string; value: string; description?: string; badge?: string; live?: boolean }> }>>([]);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -118,25 +130,37 @@ export default function ChatPage() {
     fetch("/api/chat/agents")
       .then((r) => r.json())
       .then((d) => {
-        setAgents(d.agents);
+        // Only show chat-capable agents in the chat picker
+        const chatAgents = d.agents.filter((a: ChatAgent & { chatCapable?: boolean }) => a.chatCapable !== false);
+        setAgents(chatAgents);
         // Pre-select the first available agent.
-        const first = d.agents.find((a: ChatAgent) => a.available);
+        const first = chatAgents.find((a: ChatAgent) => a.available);
         if (first) setSelectedAgent(first.id);
       });
-    // Fetch live model catalogue from the gateway. The API route
-    // caches for 5 min, so this is cheap on repeated calls.
+    // Fetch live model catalogue from the API (reads from Hermes config.yaml).
     fetch("/api/chat/models")
       .then((r) => r.json())
       .then((d) => {
-        if (d.models?.groups) {
-          // Flatten the grouped response into a single array.
+        if (d.groups) {
+          // Flatten the grouped response into a single array for the picker.
           const flat: Array<{ id: string; provider: string; friendlyName?: string }> = [];
-          for (const g of d.models.groups) {
+          for (const g of d.groups) {
             for (const m of g.models) {
               flat.push({ id: m.id, provider: g.provider, friendlyName: m.friendlyName });
             }
           }
           setLiveModels(flat);
+          setModelGroups(d.groups.map((g: { provider: string; label: string; models: Array<{ id: string; friendlyName: string; isDefault?: boolean }> }) => ({
+            provider: g.provider,
+            label: g.label,
+            options: g.models.map((m) => ({
+              label: m.friendlyName,
+              value: m.id,
+              description: m.isDefault ? "Your default model" : undefined,
+              badge: m.isDefault ? "default" : undefined,
+              live: true,
+            })),
+          })));
         }
       })
       .catch(() => {});
@@ -304,8 +328,19 @@ export default function ChatPage() {
       abortRef.current = null;
     }
   }
+  /** Copy message text to clipboard, show "Copied!" toast on that message. */
+    async function copyMessage(msg: ChatMessage) {
+      try {
+        await navigator.clipboard.writeText(msg.content);
+        setCopiedId(msg.id);
+        setTimeout(() => setCopiedId(null), 1500);
+      } catch {
+        // clipboard API denied — no-op
+      }
+    }
 
-  function stopStreaming() {
+    /** Stop streaming + clear the AbortController. */
+    function stopStreaming() {
     abortRef.current?.abort();
   }
 
@@ -321,7 +356,7 @@ export default function ChatPage() {
     const idx = messages.findIndex((m) => m.id === msg.id);
     const prev = idx > 0 ? messages[idx - 1] : undefined;
     if (!prev || prev.role !== "user") return;
-    setRetryingId(msg.id);
+    setRetlyingId(msg.id);
     setStreaming(true);
     // Wipe the assistant slot to "streaming" by replacing it with placeholder.
     setMessages((list) =>
@@ -387,7 +422,7 @@ export default function ChatPage() {
       );
     } finally {
       setStreaming(false);
-      setRetryingId(null);
+      setRetlyingId(null);
       abortRef.current = null;
     }
   }
@@ -535,7 +570,7 @@ export default function ChatPage() {
                 </div>
               </div>
               <ModelPicker
-                groups={groupedPickerOptions(liveModels)}
+                groups={modelGroups.length > 0 ? modelGroups : groupedPickerOptions(liveModels)}
                 value={activeConv.model ?? ""}
                 fallbackLabel={activeAgent.defaultModel}
                 onChange={async (model) => {
@@ -648,20 +683,40 @@ export default function ChatPage() {
                               {(msg.completionTokens ?? 0) > 0 ? `+${msg.completionTokens}` : ""} tokens
                             </span>
                           )}
+                          {activeConv && activeAgent && (
+                            <span className="ml-auto flex items-center gap-1 rounded-full border border-[var(--border)] bg-[var(--card)] px-2 py-0.5 text-[10px] font-mono text-[var(--muted-foreground)]">
+                              {activeConv.model?.split("/").pop() ?? activeAgent.defaultModel.split("/").pop()}
+                            </span>
+                          )}
                           {!isUser && msg.id > 0 && (
-                            <button
-                              onClick={() => retry(msg)}
-                              disabled={retryingId === msg.id || streaming}
-                              className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 hover:bg-[var(--muted)] disabled:opacity-50"
-                              title="Re-run the assistant turn with the same user message — uses the conversation's current model."
-                            >
-                              {retryingId === msg.id ? (
-                                <Loader2 className="h-3 w-3 animate-spin" />
-                              ) : (
-                                <RefreshCw className="h-3 w-3" />
-                              )}
-                              retry
-                            </button>
+                            <>
+                              <button
+                                onClick={() => copyMessage(msg)}
+                                disabled={copiedId === msg.id}
+                                className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 hover:bg-[var(--muted)] disabled:opacity-50"
+                                title="Copy message to clipboard"
+                              >
+                                {copiedId === msg.id ? (
+                                  <Check className="h-3 w-3 text-emerald-500" />
+                                ) : (
+                                  <Copy className="h-3 w-3" />
+                                )}
+                                {copiedId === msg.id ? "Copied!" : "Copy"}
+                              </button>
+                              <button
+                                onClick={() => retry(msg)}
+                                disabled={retlyingId === msg.id || streaming}
+                                className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 hover:bg-[var(--muted)] disabled:opacity-50"
+                                title="Re-run with the same user message — uses the conversation's current model"
+                              >
+                                {retlyingId === msg.id ? (
+                                  <Loader2 className="h-3 w-3 animate-spin" />
+                                ) : (
+                                  <RefreshCw className="h-3 w-3" />
+                                )}
+                                retry
+                              </button>
+                            </>
                           )}
                         </div>
                       )}
