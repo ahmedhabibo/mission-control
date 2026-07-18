@@ -217,11 +217,13 @@ export function modelsForProvider(provider: ModelEntry["provider"]): ModelEntry[
 /** Map an agent id (chat registry) to its preferred provider. */
 export function providerForAgent(agentId: string): ModelEntry["provider"] {
   switch (agentId) {
+    case "nim":
+      return "nvidia";
+    case "mistral-direct":
+      return "mistral";
     case "hermes":
     case "opencode":
       return "nvidia";
-    case "mistral-vibe":
-      return "mistral";
     case "openrouter":
       return "openrouter";
     default:

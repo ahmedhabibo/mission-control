@@ -1,28 +1,71 @@
+/** Agent route — merges chat adapters (can chat) with discovered CLI agents (can run tasks). */
 import { NextResponse } from "next/server";
-import { listChatAgents } from "@/lib/chat/registry";
-import { checkAgentsHealth } from "@/lib/chat/health";
+import { discoverAgents } from "@/lib/discovery/agents";
+import { CHAT_AGENTS } from "@/lib/chat/registry";
 
 export const dynamic = "force-dynamic";
 
-/** GET /api/chat/agents — client-safe list of chat-capable agents with health. */
+/**
+ * GET /api/chat/agents — returns two categories:
+ *   1. Chat agents (from registry) — can actually chat (Hermes, NIM, Mistral)
+ *   2. CLI agents (from discovery) — can run tasks, not direct chat
+ * Both are returned; the UI distinguishes them with `chatCapable: true/false`.
+ */
 export async function GET() {
-  const agents = listChatAgents();
+  const startedAt = Date.now();
 
-  // Ping the gateway for each available agent's health. We only check
-  // agents that are flagged `available` (env configured); unavailable
-  // agents are already "offline" by definition.
-  const availableIds = agents.filter((a) => a.available).map((a) => a.id);
-  const healthMap = availableIds.length > 0
-    ? await checkAgentsHealth(availableIds, 2500)
-    : {};
+  // 1. Chat-capable adapters from the registry
+  const chatAgents = CHAT_AGENTS.map((a) => ({
+    id: a.id,
+    name: a.name,
+    description: a.description,
+    icon: a.icon,
+    kind: "chat" as const,
+    chatCapable: true,
+    profile: undefined as string | undefined,
+    defaultModel: a.defaultModel,
+    available: a.available,
+    unavailableReason: a.unavailableReason ?? null,
+    healthy: a.available,
+    healthLatencyMs: null as number | null,
+    healthStatus: (a.available ? "online" : "offline") as string,
+    healthDetail: null as string | null,
+  }));
 
-  return NextResponse.json({
-    agents: agents.map((a) => ({
-      ...a,
-      healthy: a.available ? (healthMap[a.id]?.healthy ?? false) : false,
-      healthLatencyMs: a.available ? (healthMap[a.id]?.latencyMs ?? null) : null,
-      healthStatus: a.available ? (healthMap[a.id]?.status ?? "offline") : "offline",
-      healthDetail: a.available ? (healthMap[a.id]?.detail ?? undefined) : undefined,
-    })),
-  });
+  // 2. Discovered CLI agents (for Tasks/Orchestration, not direct chat)
+  const discovered = await discoverAgents();
+  const cliAgents = discovered.map((a) => ({
+    id: a.id,
+    name: a.name,
+    description: a.description,
+    icon: a.icon,
+    kind: a.kind,
+    chatCapable: false,
+    profile: a.profile,
+    defaultModel: a.defaultModel,
+    available: a.live,
+    unavailableReason: a.reason ?? null,
+    healthy: a.live,
+    healthLatencyMs: null as number | null,
+    healthStatus: (a.live ? "online" : "offline") as string,
+    healthDetail: null as string | null,
+  }));
+
+  // Chat agents first, then CLIs
+  const all = [...chatAgents, ...cliAgents];
+
+  return NextResponse.json(
+    {
+      agents: all,
+      meta: {
+        scannedAt: new Date().toISOString(),
+        discoveredCount: all.length,
+        liveCount: all.filter((a) => a.healthy).length,
+        chatAgentCount: chatAgents.filter((a) => a.available).length,
+        cliAgentCount: cliAgents.filter((a) => a.available).length,
+        elapsedMs: Date.now() - startedAt,
+      },
+    },
+    { headers: { "Cache-Control": "no-store, must-revalidate" } },
+  );
 }

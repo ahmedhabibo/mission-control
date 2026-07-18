@@ -1,26 +1,32 @@
 import type { ChatAdapter } from "./types";
-import { hermesAdapter } from "./adapters/hermes";
-import { mistralAdapter } from "./adapters/mistral";
-import { opencodeAdapter } from "./adapters/opencode";
-import { openrouterAdapter } from "./adapters/openrouter";
+import { nimAdapter } from "./adapters/nim";
+import { mistralDirectAdapter } from "./adapters/mistral-direct";
+import { hermesDirectAdapter } from "./adapters/hermes-direct";
 
 /**
- * Chat agent registry — the chat equivalent of tools.config.ts.
+ * Chat agent registry — the agents you can actually chat with.
  *
- * Add an agent here to make it appear in the agent picker. Each adapter owns
- * its availability logic (env configured, binary present), so the UI can show
- * which agents are ready to chat right now.
+ * All adapters call LLM provider APIs directly (NIM, Mistral) — no
+ * gateway required. The Hermes adapter uses NIM with the Hermes
+ * SOUL.md as system prompt for personality.
+ *
+ * CLI agents (opencode, kilo, grok, claude, codex) are NOT chat agents —
+ * they're terminal coding tools used by the Tasks/Orchestration pages.
  */
 export const CHAT_AGENTS: ChatAdapter[] = [
-  hermesAdapter,
-  mistralAdapter,
-  openrouterAdapter,
-  opencodeAdapter,
+  hermesDirectAdapter,
+  nimAdapter,
+  mistralDirectAdapter,
 ];
 
 /** Look up an adapter by id. */
 export function getChatAdapter(id: string): ChatAdapter | undefined {
   return CHAT_AGENTS.find((a) => a.id === id);
+}
+
+/** The first available adapter — used as the default for new conversations. */
+export function defaultChatAdapter(): ChatAdapter {
+  return CHAT_AGENTS.find((a) => a.available) ?? CHAT_AGENTS[0];
 }
 
 /** Public (client-safe) summary of each agent — no secrets, no stream fns. */
@@ -32,6 +38,6 @@ export function listChatAgents() {
     description: a.description,
     defaultModel: a.defaultModel,
     available: a.available,
-    unavailableReason: a.unavailableReason,
+    unavailableReason: a.unavailableReason ?? null,
   }));
 }
