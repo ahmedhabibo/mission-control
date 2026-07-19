@@ -970,6 +970,7 @@ async function route(req: IncomingMessage, res: ServerResponse) {
       stream?: boolean;
       systemPrompt?: string;
       history?: ChatRequest["history"];
+      messages?: { role: string; content: string }[];
       model?: string;
       temperature?: number;
       max_tokens?: number;
@@ -981,9 +982,19 @@ async function route(req: IncomingMessage, res: ServerResponse) {
       return sendJSON(res, 400, { error: "invalid JSON body", detail: (err as Error).message });
     }
 
+    // Support both { systemPrompt, history } and OpenAI { messages } formats
+    let history = Array.isArray(body.history) ? body.history : [];
+    if (history.length === 0 && Array.isArray(body.messages)) {
+      // Convert OpenAI messages format to internal history format
+      for (const msg of body.messages) {
+        const role = msg.role === "assistant" ? "assistant" : msg.role === "system" ? "system" : "user";
+        history.push({ role, content: msg.content ?? "" });
+      }
+    }
+
     const reqShape: ChatRequest = {
       systemPrompt: body.systemPrompt,
-      history: Array.isArray(body.history) ? body.history : [],
+      history,
       model: body.model,
       temperature: body.temperature,
       max_tokens: body.max_tokens,
