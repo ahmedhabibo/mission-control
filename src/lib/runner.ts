@@ -26,11 +26,11 @@ import { broadcast } from "@/lib/sse";
 type Cache = Map<string, ProbeResult>;
 
 declare global {
-  // eslint-disable-next-line no-var
+   
   var __mcCache: Cache | undefined;
-  // eslint-disable-next-line no-var
+   
   var __mcLastSweep: string | null | undefined;
-  // eslint-disable-next-line no-var
+   
   var __mcSweepTimer: NodeJS.Timeout | undefined;
 }
 

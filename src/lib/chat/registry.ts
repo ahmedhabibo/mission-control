@@ -1,37 +1,36 @@
-import type { ChatAdapter } from "./types";
-import { nimAdapter } from "./adapters/nim";
-import { mistralDirectAdapter } from "./adapters/mistral-direct";
-import { hermesDirectAdapter } from "./adapters/hermes-direct";
-
 /**
- * Chat agent registry — the agents you can actually chat with.
+ * Chat adapter registry — Paseo-style provider config shim.
  *
- * All adapters call LLM provider APIs directly (NIM, Mistral) — no
- * gateway required. The Hermes adapter uses NIM with the Hermes
- * SOUL.md as system prompt for personality.
- *
- * CLI agents (opencode, kilo, grok, claude, codex) are NOT chat agents —
- * they're terminal coding tools used by the Tasks/Orchestration pages.
+ * Adding a new chat-capable agent no longer requires writing a new adapter
+ * file in `lib/chat/adapters/`. Instead, add an entry to
+ * `data/providers.json` that extends `"openai-compat"` (or `"nim"` for
+ * the Hermes pattern). The new entry shows up in the Chat picker,
+ * /api/chat/agents, /api/chat/models, /api/chat/send, and the task
+ * router automatically — no code changes.
  */
-export const CHAT_AGENTS: ChatAdapter[] = [
-  hermesDirectAdapter,
-  nimAdapter,
-  mistralDirectAdapter,
-];
+
+import type { ChatAdapter } from "./types";
+import { buildChatAdapters } from "@/lib/providers/registry";
+
+/** Build a fresh adapter list on each access — cheap (one file read). */
+export function getChatAdapters(): ChatAdapter[] {
+  return buildChatAdapters();
+}
 
 /** Look up an adapter by id. */
 export function getChatAdapter(id: string): ChatAdapter | undefined {
-  return CHAT_AGENTS.find((a) => a.id === id);
+  return getChatAdapters().find((a) => a.id === id);
 }
 
 /** The first available adapter — used as the default for new conversations. */
 export function defaultChatAdapter(): ChatAdapter {
-  return CHAT_AGENTS.find((a) => a.available) ?? CHAT_AGENTS[0];
+  const all = getChatAdapters();
+  return all.find((a) => a.available) ?? all[0];
 }
 
 /** Public (client-safe) summary of each agent — no secrets, no stream fns. */
 export function listChatAgents() {
-  return CHAT_AGENTS.map((a) => ({
+  return getChatAdapters().map((a) => ({
     id: a.id,
     name: a.name,
     icon: a.icon,
@@ -41,3 +40,20 @@ export function listChatAgents() {
     unavailableReason: a.unavailableReason ?? null,
   }));
 }
+
+/**
+ * DEPRECATED — prefer `getChatAdapters()`. Kept as a frozen *snapshot*
+ * for the few call sites that import the array directly. The snapshot is
+ * built once at module load; config edits require a server restart to
+ * reflect here. Use the function form for live access.
+ *
+ * Call sites still importing CHAT_AGENTS:
+ *   - src/app/api/chat/agents/route.ts
+ *   - src/lib/tasks/router.ts
+ *   - src/lib/tasks/runner.ts
+ *
+ * These are being migrated to `getChatAdapters()` below.
+ */
+export const CHAT_AGENTS: ReadonlyArray<ChatAdapter> = Object.freeze(
+  buildChatAdapters() as ChatAdapter[],
+);

@@ -1,7 +1,7 @@
 /** Agent route — merges chat adapters (can chat) with discovered CLI agents (can run tasks). */
 import { NextResponse } from "next/server";
 import { discoverAgents } from "@/lib/discovery/agents";
-import { CHAT_AGENTS } from "@/lib/chat/registry";
+import { getChatAdapters } from "@/lib/chat/registry";
 
 export const dynamic = "force-dynamic";
 
@@ -14,8 +14,8 @@ export const dynamic = "force-dynamic";
 export async function GET() {
   const startedAt = Date.now();
 
-  // 1. Chat-capable adapters from the registry
-  const chatAgents = CHAT_AGENTS.map((a) => ({
+  // 1. Chat-capable adapters from the resolved provider config
+  const chatAgents = getChatAdapters().map((a) => ({
     id: a.id,
     name: a.name,
     description: a.description,

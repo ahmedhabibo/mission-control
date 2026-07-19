@@ -46,6 +46,10 @@ export interface ChatRequest {
   history: { role: ChatRole; content: string }[];
   /** Model override; adapter falls back to its default if unset. */
   model?: string;
+  /** Temperature for sampling (0 = deterministic). */
+  temperature?: number;
+  /** Maximum tokens to generate. */
+  maxTokens?: number;
   /** Caller-controlled abort signal (e.g. client cancellation). */
   signal?: AbortSignal;
 }

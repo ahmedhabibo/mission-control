@@ -1,7 +1,7 @@
 import { db, raw } from "@/lib/db/client";
 import { tasks } from "@/lib/db/schema";
 import { eq } from "drizzle-orm";
-import { CHAT_AGENTS, getChatAdapter } from "@/lib/chat/registry";
+import { getChatAdapters, getChatAdapter } from "@/lib/chat/registry";
 import type { ChatRequest } from "@/lib/chat/types";
 import { classifyIntent } from "./classifier";
 import { route, pickAgent } from "./router";
@@ -26,7 +26,7 @@ import type { CreateTaskInput, Intent, RoutingDecision, TaskDTO, TaskEvent } fro
 // ── pub/sub for live task events ────────────────────────────────
 type Listener = (event: TaskEvent) => void;
 declare global {
-  // eslint-disable-next-line no-var
+   
   var __mcTaskListeners: Set<Listener> | undefined;
 }
 const listeners: Set<Listener> = globalThis.__mcTaskListeners ?? new Set();
@@ -48,7 +48,7 @@ function emit(event: TaskEvent) {
 
 // ── worker state ────────────────────────────────────────────────
 declare global {
-  // eslint-disable-next-line no-var
+   
   var __mcTaskWorkerRunning: boolean | undefined;
 }
 const workerRunning = globalThis.__mcTaskWorkerRunning ?? false;
@@ -274,11 +274,31 @@ async function executeTask(task: TaskDTO) {
 // ── helpers ─────────────────────────────────────────────────────
 
 function failTask(id: string, message: string) {
-  db.update(tasks)
-    .set({ status: "failed", error: message, completedAt: new Date().toISOString() })
-    .where(eq(tasks.id, id))
-    .run();
-  emit({ type: "error", taskId: id, message });
+  const task = getTask(id);
+  if (!task) return;
+
+  if (task.retryCount < task.maxRetries) {
+    // Re-enqueue with exponential backoff: 1s, 4s, 16s, capped at 16s
+    const backoffMs = Math.min(1000 * Math.pow(4, task.retryCount), 16000);
+    db.update(tasks)
+      .set({
+        status: "queued",
+        error: message,
+        retryCount: task.retryCount + 1,
+        startedAt: null,
+      })
+      .where(eq(tasks.id, id))
+      .run();
+    emit({ type: "status", taskId: id, status: "queued" });
+    // Wake the worker after backoff so it picks up the re-queued task
+    setTimeout(() => ensureWorker(), backoffMs);
+  } else {
+    db.update(tasks)
+      .set({ status: "failed", error: message, completedAt: new Date().toISOString() })
+      .where(eq(tasks.id, id))
+      .run();
+    emit({ type: "error", taskId: id, message: `Task failed after ${task.maxRetries} retries: ${message}` });
+  }
 }
 
 function updateStatus(
@@ -290,7 +310,7 @@ function updateStatus(
 }
 
 function pickFirstAvailable(routedAgents: string[]): string | null {
-  const avail = new Set(CHAT_AGENTS.filter((a) => a.available).map((a) => a.id));
+  const avail = new Set(getChatAdapters().filter((a) => a.available).map((a) => a.id));
   return routedAgents.find((id) => avail.has(id)) ?? null;
 }
 
@@ -320,13 +340,22 @@ function toDTO(row: typeof tasks.$inferSelect): TaskDTO {
       /* corrupt JSON — treat as no parents */
     }
   }
+  let routed: string[] = [];
+  if (row.routedAgents) {
+    try {
+      const parsed = JSON.parse(row.routedAgents);
+      if (Array.isArray(parsed)) routed = parsed.filter((s): s is string => typeof s === "string");
+    } catch {
+      /* corrupt JSON — treat as no routed agents */
+    }
+  }
   return {
     id: row.id,
     title: row.title,
     prompt: row.prompt,
     intent: row.intent as Intent | null,
     intentHint: row.intentHint as Intent | "auto",
-    routedAgents: row.routedAgents ? JSON.parse(row.routedAgents) : [],
+    routedAgents: routed,
     assignedAgent: row.assignedAgent,
     status: row.status as TaskDTO["status"],
     priority: row.priority,
@@ -340,6 +369,8 @@ function toDTO(row: typeof tasks.$inferSelect): TaskDTO {
     createdAt: row.createdAt,
     startedAt: row.startedAt,
     completedAt: row.completedAt,
+    retryCount: row.retryCount ?? 0,
+    maxRetries: row.maxRetries ?? 3,
   };
 }
 

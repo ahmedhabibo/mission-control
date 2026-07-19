@@ -1,11 +1,12 @@
-import { CHAT_AGENTS } from "@/lib/chat/registry";
+import { getChatAdapters } from "@/lib/chat/registry";
 import type { Intent, RoutingDecision } from "./types";
 
 /**
  * Routing engine — maps a classified Intent to an ordered list of agent ids.
  *
- * All agents route through direct API adapters (NIM, Mistral, Hermes)
- * — no gateway required. The first available agent runs the task.
+ * All agents route through direct API adapters built from the resolved
+ * provider config (`data/providers.json`) — no gateway required.
+ * The first available agent runs the task.
  */
 
 const ROUTING: Record<Intent, string[]> = {
@@ -17,7 +18,7 @@ const ROUTING: Record<Intent, string[]> = {
 };
 
 function availableAgentIds(): Set<string> {
-  return new Set(CHAT_AGENTS.filter((a) => a.available).map((a) => a.id));
+  return new Set(getChatAdapters().filter((a) => a.available).map((a) => a.id));
 }
 
 export function route(intent: Intent): RoutingDecision {

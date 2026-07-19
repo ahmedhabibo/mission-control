@@ -16,7 +16,7 @@ export type SseEvent =
 type Listener = (event: SseEvent) => void;
 
 declare global {
-  // eslint-disable-next-line no-var
+   
   var __mcListeners: Set<Listener> | undefined;
 }
 

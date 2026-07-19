@@ -51,6 +51,9 @@ export interface TaskDTO {
   createdAt: string;
   startedAt: string | null;
   completedAt: string | null;
+  /** Retry tracking (v0.3.1) */
+  retryCount: number;
+  maxRetries: number;
 }
 
 /** Live progress event emitted by the runner while executing a task. */

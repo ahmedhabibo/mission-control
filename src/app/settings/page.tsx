@@ -86,7 +86,9 @@ export default function SettingsPage() {
   const [envValues, setEnvValues] = useState<Record<string, string>>({});
   const [envExists, setEnvExists] = useState<Record<string, boolean>>({});
   const [envDirty, setEnvDirty] = useState<Record<string, boolean>>({});
-  const [activeTab, setActiveTab] = useState<"env" | "agents" | "advanced">("env");
+  const [activeTab, setActiveTab] = useState<
+    "env" | "agents" | "registry" | "advanced"
+  >("env");
   const [savedToast, setSavedToast] = useState<string | null>(null);
 
   /* ── Load ──────────────────────────────────────────────────────── */
@@ -181,7 +183,8 @@ export default function SettingsPage() {
       {/* Tabs */}
       <div className="mt-6 flex border-b border-[var(--border)]">
         {[
-          { id: "env" as const, label: "Providers", icon: <PlugZap className="h-3.5 w-3.5" /> },
+          { id: "env" as const, label: "Credentials", icon: <PlugZap className="h-3.5 w-3.5" /> },
+          { id: "registry" as const, label: "Provider registry", icon: <Plus className="h-3.5 w-3.5" /> },
           { id: "agents" as const, label: "Agent roster", icon: <Cog className="h-3.5 w-3.5" /> },
           { id: "advanced" as const, label: "Advanced", icon: <RotateCcw className="h-3.5 w-3.5" /> },
         ].map((tab) => (
@@ -208,12 +211,18 @@ export default function SettingsPage() {
       )}
 
       {activeTab === "env" && (
-        <div className="mt-6 space-y-4">
-          <p className="text-sm text-[var(--muted-foreground)]">
-            Set provider API keys. Each key unlocks the matching chat adapter in Mission Control.
-            Keys are written to <code className="rounded bg-[var(--muted)] px-1 font-mono text-xs">.env.local</code>
-            (not the database). Empty fields are skipped when you click Save.
-          </p>
+        <div className="mt-6 space-y-6">
+          {/* ── Provider Registry (Paseo-style) ─────────────────────────── */}
+          <ProviderRegistry />
+
+          <div className="border-t border-[var(--border)] pt-4">
+            <h3 className="text-sm font-semibold mb-1">API Keys</h3>
+            <p className="text-sm text-[var(--muted-foreground)]">
+              Each key unlocks the matching chat adapter in Mission Control.
+              Keys are written to <code className="rounded bg-[var(--muted)] px-1 font-mono text-xs">.env.local</code>
+              (not the database). Empty fields are skipped when you click Save.
+            </p>
+          </div>
           {ENV_FIELDS.map((field) => {
             const isSet = envExists[field.key];
             const hasDirty = envDirty[field.key];
@@ -357,6 +366,8 @@ export default function SettingsPage() {
         </div>
       )}
 
+      {activeTab === "registry" && <ProviderRegistry />}
+
       {activeTab === "advanced" && (
         <div className="mt-6 space-y-4">
           <div className="rounded-xl border border-amber-500/30 bg-amber-500/5 p-4">
@@ -387,10 +398,237 @@ export default function SettingsPage() {
               <li>• Chat agents: Hermes, NIM, Mistral Direct (can chat)</li>
               <li>• CLI agents: kilo, grok, opencode, claude, codex, lm-studio (run tasks)</li>
               <li>• Hermes config.yaml is read-only here; edit it on disk for model defaults.</li>
+              <li>• Provider registry (Paseo-style): add an entry in the Providers tab instead of writing an adapter file.</li>
             </ul>
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+/* ── Provider Registry — Paseo-style add/enable/disable entries ──────── */
+
+interface ProviderEntry {
+  id: string;
+  extends: string;
+  label: string;
+  icon: string;
+  description: string;
+  endpoint: string;
+  env: string;
+  defaultModel: string;
+  enabled: boolean;
+  order: number;
+  notes: string;
+  systemPromptFile: string;
+  isBuiltin: boolean;
+}
+
+function ProviderRegistry() {
+  const [providers, setProviders] = useState<ProviderEntry[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [showForm, setShowForm] = useState(false);
+  const [toast, setToast] = useState<string | null>(null);
+
+  async function reload() {
+    setLoading(true);
+    try {
+      const r = await fetch("/api/providers", { cache: "no-store" });
+      if (!r.ok) return;
+      const d = (await r.json()) as { providers: ProviderEntry[] };
+      setProviders(d.providers);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    reload();
+  }, []);
+
+  async function toggle(p: ProviderEntry) {
+    await fetch(`/api/providers?id=${encodeURIComponent(p.id)}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ enabled: !p.enabled }),
+    });
+    await reload();
+    setToast(`${p.label} ${!p.enabled ? "enabled" : "disabled"}`);
+    setTimeout(() => setToast(null), 2000);
+  }
+
+  async function remove(p: ProviderEntry) {
+    if (!confirm(`Delete provider "${p.label}"? This removes it from the chat picker.`)) return;
+    await fetch(`/api/providers?id=${encodeURIComponent(p.id)}`, { method: "DELETE" });
+    await reload();
+    setToast(`${p.label} deleted`);
+    setTimeout(() => setToast(null), 2000);
+  }
+
+  return (
+    <div className="rounded-xl border border-[var(--border)] bg-[var(--card)] p-4">
+      <div className="flex items-center justify-between mb-3">
+        <div>
+          <h3 className="text-sm font-semibold">Provider Registry</h3>
+          <p className="text-xs text-[var(--muted-foreground)]">
+            Paseo-style: providers extend <code className="font-mono">openai-compat</code> or another builtin.
+            Add a new entry and it shows up in the Chat picker automatically — no code changes.
+          </p>
+        </div>
+        <button
+          onClick={() => setShowForm((s) => !s)}
+          className="inline-flex items-center gap-1.5 rounded-md border border-[var(--accent)] bg-[var(--accent)]/10 px-2.5 py-1 text-xs font-medium hover:bg-[var(--accent)]/20"
+        >
+          <Plus className="h-3.5 w-3.5" /> {showForm ? "Cancel" : "Add Provider"}
+        </button>
+      </div>
+
+      {toast && (
+        <div className="mb-3 rounded-md border border-emerald-500/30 bg-emerald-500/10 px-2.5 py-1 text-xs text-emerald-500">
+          {toast}
+        </div>
+      )}
+
+      {showForm && <AddProviderForm onSaved={() => { setShowForm(false); reload(); }} />}
+
+      {loading ? (
+        <p className="text-xs text-[var(--muted-foreground)]">Loading…</p>
+      ) : providers.length === 0 ? (
+        <p className="text-xs text-[var(--muted-foreground)]">No providers configured.</p>
+      ) : (
+        <div className="space-y-2">
+          {providers.map((p) => (
+            <div key={p.id} className="rounded-md border border-[var(--border)] bg-[var(--input)]/40 p-3 text-xs">
+              <div className="flex items-center justify-between">
+                <div className="font-semibold">
+                  <code className="font-mono text-[var(--accent)]">{p.id}</code>{" "}
+                  <span className="text-[var(--muted-foreground)]">extends {p.extends}</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  {p.isBuiltin && (
+                    <Badge className="border-zinc-500/30 text-zinc-400">builtin</Badge>
+                  )}
+                  <Badge className={p.enabled ? "border-emerald-500/30 text-emerald-500" : "border-zinc-500/30 text-zinc-400"}>
+                    {p.enabled ? "enabled" : "disabled"}
+                  </Badge>
+                  <button
+                    onClick={() => toggle(p)}
+                    className="text-[var(--muted-foreground)] hover:text-white"
+                  >
+                    {p.enabled ? "Disable" : "Enable"}
+                  </button>
+                  {!p.isBuiltin && (
+                    <button
+                      onClick={() => remove(p)}
+                      className="text-red-500/70 hover:text-red-500"
+                    >
+                      <Trash2 className="h-3 w-3" />
+                    </button>
+                  )}
+                </div>
+              </div>
+              <div className="mt-1.5">
+                <span className="font-medium">{p.label}</span>
+                {p.description && (
+                  <span className="ml-2 text-[var(--muted-foreground)]">{p.description}</span>
+                )}
+              </div>
+              <div className="mt-1.5 flex flex-wrap gap-x-4 gap-y-1 text-[var(--muted-foreground)] text-[10px]">
+                {p.endpoint && (
+                  <span title="Endpoint">
+                    <code className="font-mono">{p.endpoint}</code>
+                  </span>
+                )}
+                {p.env && (
+                  <span title="Env var holding the API key">
+                    env: <code className="font-mono">{p.env}</code>
+                  </span>
+                )}
+                {p.defaultModel && (
+                  <span title="Default model">
+                    model: <code className="font-mono">{p.defaultModel}</code>
+                  </span>
+                )}
+                {p.systemPromptFile && (
+                  <span title="System prompt file">
+                    soul: <code className="font-mono">{p.systemPromptFile}</code>
+                  </span>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function AddProviderForm({ onSaved }: { onSaved: () => void }) {
+  const [id, setId] = useState("");
+  const [label, setLabel] = useState("");
+  const [extends_, setExtends] = useState("openai-compat");
+  const [endpoint, setEndpoint] = useState("");
+  const [env, setEnv] = useState("");
+  const [defaultModel, setDefaultModel] = useState("");
+  const [description, setDescription] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  async function save() {
+    if (!id.match(/^[a-z][a-z0-9-]*$/)) {
+      setErr("id must be lowercase alphanumeric + hyphens (e.g. 'zcode')");
+      return;
+    }
+    if (!extends_) { setErr("extends is required"); return; }
+    if (!label) { setErr("label is required"); return; }
+    if (!endpoint && extends_ === "openai-compat") { setErr("endpoint is required when extending openai-compat"); return; }
+    if (!env && extends_ === "openai-compat") { setErr("env var name is required"); return; }
+
+    setSaving(true);
+    setErr(null);
+    try {
+      const r = await fetch("/api/providers", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          id, extends: extends_, label, endpoint, env, defaultModel, description,
+          enabled: true, order: 100,
+        }),
+      });
+      if (!r.ok) {
+        const d = await r.json().catch(() => ({ error: "Save failed" }));
+        setErr(d.error ?? "Save failed");
+        return;
+      }
+      onSaved();
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="mb-3 rounded-md border border-[var(--accent)]/30 bg-[var(--accent)]/5 p-3 text-xs">
+      <div className="grid grid-cols-2 gap-2">
+        <input value={id} onChange={(e) => setId(e.target.value)} placeholder="id (e.g. zcode)" className="rounded border border-[var(--border)] bg-[var(--input)] px-2 py-1 font-mono" />
+        <input value={label} onChange={(e) => setLabel(e.target.value)} placeholder="Display label" className="rounded border border-[var(--border)] bg-[var(--input)] px-2 py-1" />
+        <select value={extends_} onChange={(e) => setExtends(e.target.value)} className="rounded border border-[var(--border)] bg-[var(--input)] px-2 py-1">
+          <option value="openai-compat">openai-compat</option>
+          <option value="nim">nim (NIM + custom system prompt)</option>
+        </select>
+        <input value={endpoint} onChange={(e) => setEndpoint(e.target.value)} placeholder="endpoint (e.g. https://api.provider/v1)" className="rounded border border-[var(--border)] bg-[var(--input)] px-2 py-1 font-mono col-span-2" />
+        <input value={env} onChange={(e) => setEnv(e.target.value)} placeholder="env var name (e.g. ZCODE_API_KEY)" className="rounded border border-[var(--border)] bg-[var(--input)] px-2 py-1 font-mono" />
+        <input value={defaultModel} onChange={(e) => setDefaultModel(e.target.value)} placeholder="default model id" className="rounded border border-[var(--border)] bg-[var(--input)] px-2 py-1 font-mono" />
+        <input value={description} onChange={(e) => setDescription(e.target.value)} placeholder="short description (optional)" className="rounded border border-[var(--border)] bg-[var(--input)] px-2 py-1 col-span-2" />
+      </div>
+      {err && <p className="mt-2 text-red-500">{err}</p>}
+      <button
+        onClick={save}
+        disabled={saving}
+        className="mt-2 inline-flex items-center gap-1.5 rounded-md border border-[var(--accent)] bg-[var(--accent)]/10 px-2.5 py-1 text-xs font-medium hover:bg-[var(--accent)]/20 disabled:opacity-40"
+      >
+        <Save className="h-3 w-3" /> {saving ? "Saving…" : "Save provider"}
+      </button>
     </div>
   );
 }

@@ -102,6 +102,9 @@ export const tasks = sqliteTable("tasks", {
   completionTokens: integer("completion_tokens"),
   // Free-text error message on failure.
   error: text("error"),
+  // Retry tracking (v0.3.1)
+  retryCount: integer("retry_count").notNull().default(0),
+  maxRetries: integer("max_retries").notNull().default(3),
   // Chain relationships (v0.3 orchestration): every task belongs to at most
   // one chain (groups visually); a task can depend on multiple parents
   // (must wait for all parents to be `done` before running).

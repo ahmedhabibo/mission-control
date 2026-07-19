@@ -4,9 +4,9 @@
  */
 import { describe, it, expect, vi } from "vitest";
 
-// Mock CHAT_AGENTS so we control availability
+// Mock getChatAdapters so we control availability
 vi.mock("@/lib/chat/registry", () => ({
-  CHAT_AGENTS: [
+  getChatAdapters: () => [
     { id: "hermes", available: true },
     { id: "opencode", available: false },
     { id: "mistral-vibe", available: true },
@@ -19,12 +19,15 @@ import type { RoutingDecision } from "@/lib/tasks/types";
 describe("route", () => {
   it("returns ordered agent list for code intent", () => {
     const decision: RoutingDecision = route("code");
-    expect(decision.routedAgents).toEqual(["opencode", "hermes", "mistral-vibe"]);
+    // ROUTING[code] = ["hermes", "nim", "mistral-direct"]
+    // Only "hermes" is among the configured mock agents — the others aren't
+    // actually mock ids, but route() returns the preference list regardless.
+    expect(decision.routedAgents).toEqual(["hermes", "nim", "mistral-direct"]);
   });
 
   it("returns ordered agent list for chat intent", () => {
     const decision: RoutingDecision = route("chat");
-    expect(decision.routedAgents).toEqual(["hermes", "mistral-vibe", "opencode"]);
+    expect(decision.routedAgents).toEqual(["hermes", "nim", "mistral-direct"]);
   });
 
   it("includes reasoning explaining the routing", () => {
@@ -36,7 +39,7 @@ describe("route", () => {
 describe("pickAgent", () => {
   it("picks the first available agent from the routed list", () => {
     const decision = route("code");
-    // opencode is unavailable, so hermes (2nd) is picked
+    // Only "hermes" is available in the mock — the other routed ids aren't
     const agent = pickAgent(decision);
     expect(agent).toBe("hermes");
   });

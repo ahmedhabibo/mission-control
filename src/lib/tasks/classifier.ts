@@ -1,5 +1,6 @@
 import type { Intent } from "./types";
-import { chatCompletion, isGatewayConfigured } from "@/lib/gateway/client";
+import { defaultChatAdapter } from "@/lib/chat/registry";
+import type { ChatAdapter } from "@/lib/chat/types";
 
 /**
  * Intent classifier.
@@ -8,12 +9,12 @@ import { chatCompletion, isGatewayConfigured } from "@/lib/gateway/client";
  *
  * 1. Keyword rules — fast, deterministic, zero-cost. Covers the obvious cases
  *    ("write a function", "design a landing page", "research X").
- * 2. LLM fallback — only when rules are ambiguous AND the gateway is
- *    configured. Sends a tiny classification request to `hermes` through
- *    the gateway; falls back to "chat" on any error.
+ * 2. LLM fallback — only when rules are ambiguous AND a chat adapter is
+ *    available. Uses the first available chat adapter directly (same system
+ *    as the task router); falls back to "chat" on any error.
  *
- * Classifying via the gateway keeps secrets inside the gateway — Mission
- * Control itself has no provider credentials.
+ * Classifying via the adapter registry keeps secrets inside the provider
+ * config — Mission Control itself has no provider credentials.
  */
 
 interface Rule {
@@ -81,9 +82,10 @@ export async function classifyIntent(prompt: string): Promise<Classification> {
     };
   }
 
-  // Tier 2: LLM fallback (only if the gateway is configured).
-  if (isGatewayConfigured()) {
-    const llm = await classifyWithLLM(prompt).catch(() => null);
+  // Tier 2: LLM fallback (only if a chat adapter is available).
+  const adapter = defaultChatAdapter();
+  if (adapter?.available) {
+    const llm = await classifyWithLLM(prompt, adapter).catch(() => null);
     if (llm) return llm;
   }
 
@@ -96,23 +98,37 @@ export async function classifyIntent(prompt: string): Promise<Classification> {
 }
 
 /**
- * LLM-based classification via the Mission Control gateway. The gateway
- * routes to the configured Hermes/Mistral model; we ask it to reply with a
- * single word so the result is cheap and unambiguous.
+ * LLM-based classification via the chat adapter registry (same system as the
+ * task router). We ask the adapter to reply with a single word so the result
+ * is cheap and unambiguous.
  */
-async function classifyWithLLM(prompt: string): Promise<Classification | null> {
-  const completion = await chatCompletion("hermes", {
-    systemPrompt:
-      "Classify the user's request into exactly one of: code, design, research, knowledge, chat. Reply with the single word only.",
-    history: [{ role: "user", content: prompt.slice(0, 500) }],
-    temperature: 0,
-    max_tokens: 5,
-  });
+async function classifyWithLLM(
+  prompt: string,
+  adapter: ChatAdapter,
+): Promise<Classification | null> {
+  let full = "";
+  try {
+    for await (const chunk of adapter.stream({
+      systemPrompt:
+        "Classify the user's request into exactly one of: code, design, research, knowledge, chat. Reply with the single word only.",
+      history: [{ role: "user", content: prompt.slice(0, 500) }],
+      temperature: 0,
+      maxTokens: 5,
+    })) {
+      if (chunk.type === "delta" && chunk.content) {
+        full += chunk.content;
+      } else if (chunk.type === "error") {
+        return null;
+      }
+    }
+  } catch {
+    return null;
+  }
 
-  const raw = String(completion.content ?? "").trim().toLowerCase();
+  const raw = full.trim().toLowerCase();
   const intent = (["code", "design", "research", "knowledge", "chat"] as Intent[]).find(
     (i) => raw.startsWith(i),
   );
   if (!intent) return null;
-  return { intent, method: "llm", reasoning: `Classified by gateway (${raw}).` };
+  return { intent, method: "llm", reasoning: `Classified by adapter (${raw}).` };
 }

@@ -16,7 +16,7 @@ const DB_PATH = resolve(process.cwd(), "data", "mission-control.db");
 type DB = BetterSQLite3Database<typeof schema>;
 
 declare global {
-  // eslint-disable-next-line no-var
+   
   var __mcDb: { db: DB; raw: Database.Database } | undefined;
 }
 
@@ -39,88 +39,17 @@ export function ensureSchema() {
   // Falls back to ensureSchema() for backward compat — existing DBs that
   // were created before the migration system continue to work.
   try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
     const { runMigrations } = require("@/lib/migrations/runner");
     runMigrations();
   } catch (err) {
     console.warn("[db] migration runner not available, falling back to ensureSchema() only:", err);
   }
 
-  raw.exec(`
-    CREATE TABLE IF NOT EXISTS tool_overrides (
-      tool_id TEXT PRIMARY KEY,
-      enabled INTEGER NOT NULL,
-      endpoint_override TEXT,
-      updated_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP)
-    );
-    CREATE TABLE IF NOT EXISTS status_history (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      tool_id TEXT NOT NULL,
-      label TEXT NOT NULL,
-      status TEXT NOT NULL,
-      latency_ms INTEGER,
-      version TEXT,
-      detail TEXT NOT NULL,
-      components TEXT,
-      checked_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP)
-    );
-    CREATE INDEX IF NOT EXISTS idx_status_history_tool_time
-      ON status_history (tool_id, checked_at DESC);
-
-    CREATE TABLE IF NOT EXISTS conversations (
-      id TEXT PRIMARY KEY,
-      title TEXT NOT NULL,
-      agent_id TEXT NOT NULL,
-      system_prompt TEXT,
-      model TEXT,
-      created_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),
-      updated_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP)
-    );
-    CREATE TABLE IF NOT EXISTS messages (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
-      role TEXT NOT NULL,
-      content TEXT NOT NULL,
-      prompt_tokens INTEGER,
-      completion_tokens INTEGER,
-      latency_ms INTEGER,
-      created_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP)
-    );
-    CREATE INDEX IF NOT EXISTS idx_messages_conversation
-      ON messages (conversation_id, id);
-
-    CREATE TABLE IF NOT EXISTS tasks (
-      id TEXT PRIMARY KEY,
-      title TEXT NOT NULL,
-      prompt TEXT NOT NULL,
-      intent TEXT,
-      intent_hint TEXT NOT NULL DEFAULT 'auto',
-      routed_agents TEXT,
-      assigned_agent TEXT,
-      status TEXT NOT NULL DEFAULT 'queued',
-      priority INTEGER NOT NULL DEFAULT 0,
-      result TEXT,
-      latency_ms INTEGER,
-      prompt_tokens INTEGER,
-      completion_tokens INTEGER,
-      error TEXT,
-      chain_id TEXT,
-      parent_ids TEXT,
-      created_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),
-      started_at TEXT,
-      completed_at TEXT
-    );
-    CREATE INDEX IF NOT EXISTS idx_tasks_status_created
-      ON tasks (status, created_at DESC);
-    CREATE INDEX IF NOT EXISTS idx_tasks_created
-      ON tasks (created_at DESC);
-  `);
-
   // Idempotent ALTERs — only adds columns if missing. Safe to call repeatedly.
   // SQLite supports at most one ALTER TABLE per statement; each error is
   // suppressed because "duplicate column name" is an expected first-run skip.
   try { raw.exec(`ALTER TABLE tasks ADD COLUMN chain_id TEXT`); } catch { /* already exists */ }
   try { raw.exec(`ALTER TABLE tasks ADD COLUMN parent_ids TEXT`); } catch { /* already exists */ }
-
-  // Index on chain_id must be created AFTER the column exists.
   try { raw.exec(`CREATE INDEX IF NOT EXISTS idx_tasks_chain ON tasks (chain_id)`); } catch { /* already exists */ }
 }
