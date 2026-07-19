@@ -52,4 +52,7 @@ export function ensureSchema() {
   try { raw.exec(`ALTER TABLE tasks ADD COLUMN chain_id TEXT`); } catch { /* already exists */ }
   try { raw.exec(`ALTER TABLE tasks ADD COLUMN parent_ids TEXT`); } catch { /* already exists */ }
   try { raw.exec(`CREATE INDEX IF NOT EXISTS idx_tasks_chain ON tasks (chain_id)`); } catch { /* already exists */ }
+  // Retry columns (migration 006) — ensure fresh DBs created by ensureSchema() get them
+  try { raw.exec(`ALTER TABLE tasks ADD COLUMN retry_count INTEGER NOT NULL DEFAULT 0`); } catch { /* already exists */ }
+  try { raw.exec(`ALTER TABLE tasks ADD COLUMN max_retries INTEGER NOT NULL DEFAULT 3`); } catch { /* already exists */ }
 }
