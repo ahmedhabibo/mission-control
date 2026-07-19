@@ -40,20 +40,3 @@ export function listChatAgents() {
     unavailableReason: a.unavailableReason ?? null,
   }));
 }
-
-/**
- * DEPRECATED — prefer `getChatAdapters()`. Kept as a frozen *snapshot*
- * for the few call sites that import the array directly. The snapshot is
- * built once at module load; config edits require a server restart to
- * reflect here. Use the function form for live access.
- *
- * Call sites still importing CHAT_AGENTS:
- *   - src/app/api/chat/agents/route.ts
- *   - src/lib/tasks/router.ts
- *   - src/lib/tasks/runner.ts
- *
- * These are being migrated to `getChatAdapters()` below.
- */
-export const CHAT_AGENTS: ReadonlyArray<ChatAdapter> = Object.freeze(
-  buildChatAdapters() as ChatAdapter[],
-);
